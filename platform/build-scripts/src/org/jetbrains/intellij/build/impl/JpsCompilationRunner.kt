@@ -123,10 +123,6 @@ internal class JpsCompilationRunner(private val context: CompilationContext) {
     resolveProjectDependencies: Boolean = false,
     canceledStatus: CanceledStatus = CanceledStatus.NULL,
   ) = context.withCompilationLock {
-    require(!BazelRunfiles.isRunningFromBazel) {
-      "Running JPS compiler is not supported when running from Bazel."
-    }
-
     val compilationData = context.compilationData
 
     val forceBuild = !context.options.incrementalCompilation || !context.compilationData.isIncrementalCompilationDataAvailable()
