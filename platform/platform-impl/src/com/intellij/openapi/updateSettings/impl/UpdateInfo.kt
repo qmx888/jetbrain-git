@@ -16,6 +16,8 @@ import com.intellij.openapi.util.SystemInfoRt
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import org.intellij.lang.annotations.Language
+import com.intellij.platform.ide.customization.ExternalProductResourceUrls
+import com.intellij.platform.ide.impl.customization.BaseJetBrainsExternalProductResourceUrls
 import org.jdom.Element
 import org.jdom.JDOMException
 import org.jetbrains.annotations.ApiStatus.Internal
@@ -63,7 +65,7 @@ fun parseUpdateData(
   check(newVersion != null && releaseDescription != null) {
     "failed to check for updates: newVersion=${newVersion}, releaseDescription=${releaseDescription}"
   }
-  val githubUrl = "https://github.com/detachhead/rebased"
+  val githubUrl = (ExternalProductResourceUrls.getInstance() as BaseJetBrainsExternalProductResourceUrls).productPageUrl
   val releasesUrl = "$githubUrl/releases/latest"
   // we convert the release info to the format from https://www.jetbrains.com/updates/updates.xml because it's easier to just do that
   // than to update all the classes that can only be constructed from the parsed xml
