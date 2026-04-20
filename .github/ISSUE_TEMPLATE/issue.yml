@@ -7,6 +7,9 @@ body:
       value: |
         > [!IMPORTANT]
         > I only speak English so please use English when opening issues on this project. If you aren't fluent in English, please use a translation tool if possible.
+        
+        > [!NOTE]
+        > I would prefer to make minimal changes to the platform to reduce the risk of unintended bugs or other complications when merging upstream, so if your bug or feature request affects the upstream IntelliJ platform, please find or open an issue on [YouTrack](https://youtrack.jetbrains.com) instead.
   - type: textarea
     validations:
       required: false
