@@ -3,6 +3,7 @@ package com.intellij.ide.starter.process.exec
 import com.intellij.ide.starter.config.ConfigurationStorage
 import com.intellij.ide.starter.config.logEnvVariables
 import com.intellij.ide.starter.coroutine.CommonScope.scopeForProcesses
+import com.intellij.ide.starter.process.ProcessKiller
 import com.intellij.ide.starter.utils.catchAll
 import com.intellij.ide.starter.utils.getThrowableText
 import com.intellij.tools.ide.util.common.logError
@@ -10,9 +11,9 @@ import com.intellij.tools.ide.util.common.logOutput
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineName
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.Job
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.runInterruptible
@@ -28,6 +29,7 @@ import kotlin.time.Duration
 import kotlin.time.Duration.Companion.minutes
 import kotlin.time.Duration.Companion.seconds
 
+@Suppress("BlockingMethodInNonBlockingContext", "RAW_RUN_BLOCKING", "OPT_IN_USAGE")
 class ProcessExecutor(
   val presentableName: String,
   val workDir: Path?,
@@ -45,16 +47,6 @@ class ProcessExecutor(
   val analyzeProcessExit: Boolean = true,
   val silent: Boolean = false,
 ) {
-
-  companion object {
-    fun killProcessGracefully(process: ProcessHandle) {
-      process.destroy()
-      runCatching { process.onExit().get(20, TimeUnit.SECONDS) }.onFailure {
-        process.destroyForcibly()
-      }
-    }
-  }
-
   private fun redirectProcessOutput(
     process: Process,
     outOrErrStream: Boolean,
@@ -69,7 +61,7 @@ class ProcessExecutor(
           val line = try {
             reader.readLine() ?: break
           }
-          catch (e: IOException) {
+          catch (_: IOException) {
             break
           }
           redirectOutput.redirectLine(line)
@@ -160,18 +152,18 @@ class ProcessExecutor(
   }
 
   @Throws(ExecTimeoutException::class)
-  fun start(printEnvVariables: Boolean = ConfigurationStorage.logEnvVariables()) {
+  fun start(printEnvVariables: Boolean = ConfigurationStorage.logEnvVariables()): Int {
     @Suppress("SSBasedInspection")
-    runBlocking(Dispatchers.IO) {
+    return runBlocking(Dispatchers.IO) {
       startCancellable(printEnvVariables)
     }
   }
 
   /**
-   * Creates new process and wait for it's completion
+   * Creates a new process and waits for its completion.
    */
   @Throws(ExecTimeoutException::class)
-  suspend fun startCancellable(printEnvVariables: Boolean = ConfigurationStorage.logEnvVariables()) {
+  suspend fun startCancellable(printEnvVariables: Boolean = ConfigurationStorage.logEnvVariables()): Int {
     require(args.isNotEmpty()) { "Arguments must be not empty to start external process `$presentableName`" }
 
     val processBuilder = ProcessBuilder()
@@ -198,11 +190,10 @@ class ProcessExecutor(
       })
     }
 
-
-    @Suppress("BlockingMethodInNonBlockingContext") val process = processBuilder.start()
+    val process = processBuilder.start()
 
     val processId = process.pid()
-    val onProcessCreatedJob: Job = scopeForProcesses.launch(Dispatchers.IO + CoroutineName("On process $presentableName created job")) {
+    val onProcessCreatedJob = scopeForProcesses.launch(Dispatchers.IO + CoroutineName("On process $presentableName created job")) {
       if (!silent) logOutput("  ... started external process `$presentableName` with process ID = $processId")
       onProcessCreated(process, processId)
     }
@@ -212,20 +203,23 @@ class ProcessExecutor(
     val stderrThread = redirectProcessOutput(process, false, stderrRedirect)
     val ioThreads = listOfNotNull(inputThread, stdoutThread, stderrThread)
 
-    var finishedGracefully = false
-    fun killProcess() {
+    // can't use process.isAlive: after killProcessTree sends a signal,
+    // the OS may not reap the process immediately, so isAlive can briefly return true
+    // — causing the finally block to redundantly re-run cleanup
+    var processFinished = false
+
+    fun killProcess(gracefully: Boolean) {
+      if (processFinished) return
       catchAll { runBlocking(Dispatchers.IO) { onProcessCreatedJob.cancelAndJoin() } }
       catchAll { runBlocking(Dispatchers.IO) { withTimeout(1.minutes) { onBeforeKilled(process, processId) } } }
-      process.descendants().forEach { catchAll { killProcessGracefully(it) } }
-      catchAll { killProcessGracefully(process.toHandle()) }
+      catchAll { runBlocking(Dispatchers.IO) { ProcessKiller.killProcess(process, gracefullyAtFirst = gracefully) } }
       catchAll { ioThreads.forEach { it.interrupt() } }
-      finishedGracefully = true
+      processFinished = true
     }
 
     val shutdownHookThread = Thread(Runnable {
-      logOutput(
-        "   ... terminating process `$presentableName` by request from external process (either SIGTERM or SIGKILL is caught) ...")
-      killProcess()
+      logOutput("   ... terminating process `$presentableName` by request from external process (either SIGTERM or SIGKILL is caught) ...")
+      killProcess(gracefully = false)
     }, "process-shutdown-hook")
     try {
       Runtime.getRuntime().addShutdownHook(shutdownHookThread)
@@ -235,20 +229,17 @@ class ProcessExecutor(
     }
 
     try {
-      if (!runInterruptible(currentCoroutineContext()) { process.waitFor(timeout.inWholeSeconds, TimeUnit.SECONDS) }) {
-        val timeoutHookThread = Thread(Runnable {
-          logOutput(
-            "   ... terminating process `$presentableName` because it runs more than  ${timeout.inWholeSeconds} seconds ...")
-          killProcess()
-        }, "process-timeout-hook")
-
-        timeoutHookThread.start()
-        @Suppress("BlockingMethodInNonBlockingContext")
-        timeoutHookThread.join(20.seconds.inWholeMilliseconds)
+      processFinished = runInterruptible(currentCoroutineContext()) {
+        process.waitFor(timeout.inWholeSeconds, TimeUnit.SECONDS)
+      }
+      if (!processFinished) {
+        logOutput("   ... gracefully terminating process `$presentableName` because it runs for more than ${timeout.inWholeSeconds} seconds ...")
+        killProcess(gracefully = true)
         throw ExecTimeoutException(args.joinToString(" "), timeout)
       }
       else {
-        finishedGracefully = true
+        if (!silent) logOutput("   ... process `$presentableName` (pid=$processId) exited on its own with code ${process.exitValue()} before the ${timeout.inWholeSeconds}s timeout. ")
+        processFinished = true
       }
     }
     catch (e: CancellationException) {
@@ -256,13 +247,10 @@ class ProcessExecutor(
       throw e
     }
     finally {
-      if (!finishedGracefully) {
-        logOutput(
-          "   ... gracefully terminating process `$presentableName` because of scope cancellation or failed attempt to do it in shutdown hook/timeout ..."
-        )
-        killProcess()
+      if (!processFinished) {
+        logOutput("   ... terminating process `$presentableName` because of scope cancellation or failed attempt to do it in the timeout hook ...")
+        killProcess(gracefully = !currentCoroutineContext().isActive)
       }
-      process.destroyForcibly()
 
       try {
         Runtime.getRuntime().removeShutdownHook(shutdownHookThread)
@@ -283,16 +271,21 @@ class ProcessExecutor(
         logError("CatchAll swallowed error: ${t.message}")
         logError(getThrowableText(t))
       }
+
       if (onProcessCreatedJob.isActive) {
         logOutput(" ... cancelling and waiting for process `$onProcessCreatedJob` job ... ")
         onProcessCreatedJob.cancelAndJoin()
       }
     }
 
-    ioThreads.forEach { catchAll { it.join() } }
+    catchAll { process.inputStream.close() }
+    catchAll { process.errorStream.close() }
+    ioThreads.forEach { catchAll { it.join(30.seconds.inWholeMilliseconds) } }
 
     if (analyzeProcessExit) {
       analyzeProcessExit(process)
     }
+
+    return process.exitValue()
   }
 }

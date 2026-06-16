@@ -1,4 +1,4 @@
-// Copyright 2000-2025 JetBrains s.r.o. and contributors. Use of this source code is governed by the Apache 2.0 license.
+// Copyright 2000-2026 JetBrains s.r.o. and contributors. Use of this source code is governed by the Apache 2.0 license.
 package org.jetbrains.idea.maven.dom.inspections
 
 import com.intellij.codeHighlighting.HighlightDisplayLevel
@@ -34,6 +34,7 @@ class MavenNoRootDefinedInspection : BasicDomElementsInspection<MavenDomProjectM
   override fun checkFile(file: PsiFile, manager: InspectionManager, isOnTheFly: Boolean): Array<ProblemDescriptor?>? {
     if (file is XmlFile && file.isPhysical()) {
       val projectManager = MavenProjectsManager.getInstanceIfCreated(file.project) ?: return null
+      if (!projectManager.isInitialized) return null
       val rootMavenProject = projectManager.rootProjects.singleOrNull { file.virtualFile.equals(it.file) } ?: return null
       val model =
         DomManager.getDomManager(file.getProject()).getFileElement<MavenDomProjectModel?>(file, MavenDomProjectModel::class.java)
@@ -46,7 +47,7 @@ class MavenNoRootDefinedInspection : BasicDomElementsInspection<MavenDomProjectM
       val psiToShowError = model.rootTag?.children?.takeWhile { it !is XmlTag && it !is XmlText } ?: return null
 
       if (rootMavenProject.file.parent.toNioPath().resolve(".mvn").isDirectory()) return null
-      if (rootElement.modelVersion.stringValue == MODEL_VERSION_4_0_0) return null
+      if (rootElement.effectiveModelVersion == MODEL_VERSION_4_0_0) return null
       if (model.rootTag?.getAttributeValue("root")?.toBoolean() == true) {
         return null
       }

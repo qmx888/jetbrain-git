@@ -1,4 +1,4 @@
-// Copyright 2000-2025 JetBrains s.r.o. and contributors. Use of this source code is governed by the Apache 2.0 license.
+// Copyright 2000-2026 JetBrains s.r.o. and contributors. Use of this source code is governed by the Apache 2.0 license.
 package com.intellij.spellchecker.quickfixes;
 
 import com.intellij.codeInsight.intention.EventTrackingIntentionAction;
@@ -15,6 +15,7 @@ import com.intellij.openapi.util.Segment;
 import com.intellij.openapi.util.TextRange;
 import com.intellij.psi.PsiElement;
 import com.intellij.psi.PsiFile;
+import com.intellij.psi.PsiNameIdentifierOwner;
 import com.intellij.psi.PsiNamedElement;
 import com.intellij.psi.PsiNamedElementWithCustomPresentation;
 import com.intellij.psi.SmartPointerManager;
@@ -31,6 +32,7 @@ import com.intellij.refactoring.rename.RenameUtil;
 import com.intellij.spellchecker.SpellCheckerManager;
 import com.intellij.spellchecker.statistics.SpellcheckerActionStatistics;
 import com.intellij.spellchecker.statistics.SpellcheckerRateTracker;
+import com.intellij.spellchecker.tokenizer.SpellcheckingStrategy;
 import com.intellij.spellchecker.util.SpellCheckerBundle;
 import icons.SpellcheckerIcons;
 import org.jetbrains.annotations.Nls;
@@ -65,9 +67,8 @@ public class RenameTo extends IntentionAndQuickFixAction implements Iconable, Ev
     if (element == null) return false;
     var presentationName = getPresentationName(element);
     if (presentationName == null) return false;
-    generateSuggestions(presentationName.getSecond(), element);
+    generateSuggestions(presentationName.getFirst(), presentationName.getSecond());
     this.namedPointer = SmartPointerManager.getInstance(project).createSmartPsiElementPointer(presentationName.getFirst());
-    if (suggestions == null || suggestions.isEmpty()) return false;
     return true;
   }
 
@@ -144,26 +145,44 @@ public class RenameTo extends IntentionAndQuickFixAction implements Iconable, Ev
     return handler;
   }
 
-  private void generateSuggestions(String name, PsiElement element) {
+  private void generateSuggestions(PsiNamedElement namedElement, String name) {
     if (suggestions == null) {
-      TextRange range = restoreRange();
-      if (range == null) return;
+      TextRange range = getNameRelativeRange(namedElement, name);
+      if (range == null) {
+        this.suggestions = new ArrayList<>();
+        return;
+      }
       this.suggestions = SpellCheckerManager.getInstance(pointer.getProject()).getSuggestions(typo)
         .stream()
         .map(suggestion -> range.replace(name, suggestion))
-        .filter(suggestion -> RenameUtil.isValidName(element.getProject(), element, suggestion))
+        .filter(suggestion -> RenameUtil.isValidName(namedElement.getProject(), namedElement, suggestion))
         .distinct()
         .toList();
     }
   }
 
-  private @Nullable TextRange restoreRange() {
-    PsiElement element = pointer.getElement();
+  private @Nullable TextRange getNameRelativeRange(PsiNamedElement namedElement, String name) {
     Segment rangeRelativeToFile = this.rangeRelativeToFile.getRange();
-    if (element == null || rangeRelativeToFile == null) return null;
+    if (rangeRelativeToFile == null) return null;
 
-    return TextRange.create(rangeRelativeToFile)
-      .shiftLeft(element.getTextRange().getStartOffset());
+    PsiElement element = namedElement instanceof PsiNameIdentifierOwner owner ? owner.getNameIdentifier() : pointer.getElement();
+    if (element == null) return null;
+
+    TextRange range = getNameRelativeTypoRange(element, rangeRelativeToFile);
+    if (range == null || range.getEndOffset() > name.length()) return null;
+    return range.substring(name).equals(typo) ? range : null;
+  }
+
+  private static @Nullable TextRange getNameRelativeTypoRange(PsiElement element, Segment rangeRelativeToFile) {
+    SpellcheckingStrategy strategy = SpellcheckingStrategy.getSpellcheckingStrategy(element);
+    if (strategy == null) return TextRange.create(rangeRelativeToFile).shiftLeft(element.getTextRange().getStartOffset());
+    TextRange range = strategy.getRenameIdentifierRange(element);
+
+    // This range can be incorrect in the case of programming language syntax errors.
+    // For example, if someone types something before the `import` statement in Java.
+    if (rangeRelativeToFile.getStartOffset() < element.getTextRange().getStartOffset()) return null;
+    return range == null ? TextRange.create(rangeRelativeToFile).shiftLeft(element.getTextRange().getStartOffset())
+                         : TextRange.create(rangeRelativeToFile).shiftLeft(range.getStartOffset());
   }
 
   private void runRenamer(PsiElement element, String suggestion) {

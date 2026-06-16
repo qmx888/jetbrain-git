@@ -42,10 +42,10 @@ import com.jetbrains.python.PythonDialectsTokenSetProvider;
 import com.jetbrains.python.ast.PyAstFunction.Modifier;
 import com.jetbrains.python.ast.impl.PyUtilCore;
 import com.jetbrains.python.codeInsight.PyDataclassParameters;
+import com.jetbrains.python.codeInsight.stdlib.PyDataclassTypeProvider;
 import com.jetbrains.python.codeInsight.controlflow.ControlFlowCache;
 import com.jetbrains.python.codeInsight.controlflow.ScopeOwner;
 import com.jetbrains.python.codeInsight.dataflow.scope.ScopeUtil;
-import com.jetbrains.python.codeInsight.stdlib.PyDataclassTypeProvider;
 import com.jetbrains.python.codeInsight.typing.PyTypingTypeProvider;
 import com.jetbrains.python.documentation.docstrings.DocStringUtil;
 import com.jetbrains.python.psi.AccessDirection;
@@ -91,6 +91,7 @@ import com.jetbrains.python.psi.stubs.PropertyStubStorage;
 import com.jetbrains.python.psi.stubs.PyClassStub;
 import com.jetbrains.python.psi.stubs.PyFunctionStub;
 import com.jetbrains.python.psi.stubs.PyTargetExpressionStub;
+import com.jetbrains.python.psi.types.PyAnyType;
 import com.jetbrains.python.psi.types.PyCallableParameter;
 import com.jetbrains.python.psi.types.PyClassLikeType;
 import com.jetbrains.python.psi.types.PyClassType;
@@ -148,7 +149,7 @@ public class PyClassImpl extends PyBaseElementImpl<PyClassStub> implements PyCla
   @Override
   public PyType getType(@NotNull TypeEvalContext context, @NotNull TypeEvalContext.Key key) {
     if (PyTypingTypeProvider.ANY.equals(getQualifiedName())) {
-      return null;
+      return PyAnyType.getAny();
     }
     return new PyClassTypeImpl(this, true);
   }
@@ -314,7 +315,7 @@ public class PyClassImpl extends PyBaseElementImpl<PyClassStub> implements PyCla
       }
       if (ownSlots == null) {
         // check @dataclass(slots=True)
-        ownSlots = getOwnSlotsSynthesized(contextToUse);
+        ownSlots = getOwnSlotsSynthesized(cls, contextToUse);
       }
       if (ownSlots == null) {
         return null; // not "viably slotted"
@@ -366,13 +367,14 @@ public class PyClassImpl extends PyBaseElementImpl<PyClassStub> implements PyCla
    * Returns null if this class is not made "viably slotted" via <code>@dataclass(slots=True)</code>.
    * Returns a list of all valid slotted attribute names otherwise.
    */
-  private @Nullable List<@NotNull String> getOwnSlotsSynthesized(@NotNull TypeEvalContext context) {
-    PyDataclassParameters dcParams = parseDataclassParameters(this, context);
+  @ApiStatus.Internal
+  public static @Nullable List<@NotNull String> getOwnSlotsSynthesized(@NotNull PyClass cls, @NotNull TypeEvalContext context) {
+    PyDataclassParameters dcParams = parseDataclassParameters(cls, context);
     if (dcParams != null && dcParams.getSlots()) {
       List<String> result = new ArrayList<>();
-      var initVars = PyDataclassTypeProvider.Companion.getInitVars(this, dcParams, context);
+      var initVars = PyDataclassTypeProvider.Helper.getInitVars(cls, dcParams, context);
       var initVarTargets = initVars == null ? emptySet() : ContainerUtil.map2Set(initVars, iv -> iv.getTargetExpression());
-      var attributes = getClassAttributes();
+      var attributes = cls.getClassAttributes();
 
       for (PyTargetExpression target : attributes) {
         final String name = target.getName();
@@ -1524,12 +1526,12 @@ public class PyClassImpl extends PyBaseElementImpl<PyClassStub> implements PyCla
   private @NotNull List<PyClassLikeType> doGetSuperClassTypes(@NotNull TypeEvalContext context) {
     final List<PyClassLikeType> result = new ArrayList<>();
 
-    // In some cases stub may not provide all information, so we use stubs only if AST access id disabled
-    if (!context.maySwitchToAST(this)) {
-      fillSuperClassesNoSwitchToAst(context, getStub(), result);
+    // In some cases stub may not provide all information, so we use stubs only if AST access is disabled
+    if (context.maySwitchToAST(this)) {
+      fillSuperClassesSwitchingToAst(context, result);
     }
     else {
-      fillSuperClassesSwitchingToAst(context, result);
+      fillSuperClassesNoSwitchToAst(context, getStub(), result);
     }
 
     PyPsiUtils.assertValid(this);

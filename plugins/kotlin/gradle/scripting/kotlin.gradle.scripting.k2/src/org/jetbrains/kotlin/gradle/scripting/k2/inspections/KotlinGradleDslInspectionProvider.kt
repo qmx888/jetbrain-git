@@ -1,14 +1,19 @@
-// Copyright 2000-2025 JetBrains s.r.o. and contributors. Use of this source code is governed by the Apache 2.0 license.
+// Copyright 2000-2026 JetBrains s.r.o. and contributors. Use of this source code is governed by the Apache 2.0 license.
 package org.jetbrains.kotlin.gradle.scripting.k2.inspections
 
 import com.intellij.codeInspection.ProblemsHolder
+import com.intellij.gradle.java.properties.util.gradlePropertiesStream
 import com.intellij.openapi.util.io.FileUtilRt
 import com.intellij.psi.PsiElementVisitor
 import com.intellij.psi.PsiFile
+import org.jetbrains.kotlin.psi.KtFile
 import org.jetbrains.plugins.gradle.codeInspection.GradleDslInspectionProvider
 import org.jetbrains.plugins.gradle.util.GradleConstants
 
 class KotlinGradleDslInspectionProvider : GradleDslInspectionProvider {
+    private fun isSuitableGradleKtsFile(file: PsiFile): Boolean =
+        file is KtFile && FileUtilRt.extensionEquals(file.name, GradleConstants.KOTLIN_DSL_SCRIPT_EXTENSION)
+
     override fun getConfigurationAvoidanceInspectionVisitor(
         holder: ProblemsHolder,
         isOnTheFly: Boolean
@@ -44,9 +49,8 @@ class KotlinGradleDslInspectionProvider : GradleDslInspectionProvider {
         return PsiElementVisitor.EMPTY_VISITOR
     }
 
-    override fun isAvoidDependencyNamedArgumentsNotationInspectionAvailable(file: PsiFile) : Boolean {
-        return FileUtilRt.extensionEquals(file.name, GradleConstants.KOTLIN_DSL_SCRIPT_EXTENSION)
-    }
+    override fun isAvoidDependencyNamedArgumentsNotationInspectionAvailable(file: PsiFile) : Boolean =
+        isSuitableGradleKtsFile(file)
 
     override fun getAvoidDependencyNamedArgumentsNotationInspectionVisitor(
         holder: ProblemsHolder,
@@ -56,7 +60,13 @@ class KotlinGradleDslInspectionProvider : GradleDslInspectionProvider {
     }
 
     override fun isRedundantKotlinStdLibInspectionAvailable(file: PsiFile): Boolean {
-        return FileUtilRt.extensionEquals(file.name, GradleConstants.KOTLIN_DSL_SCRIPT_EXTENSION)
+        if (!isSuitableGradleKtsFile(file)) return false
+
+        val kotlinStdlibDefaultDependencyProp = gradlePropertiesStream(file).firstNotNullOfOrNull {
+            it.findPropertyByKey("kotlin.stdlib.default.dependency")?.value
+        }
+        // the default value is "true"
+        return kotlinStdlibDefaultDependencyProp != "false"
     }
 
     override fun getRedundantKotlinStdLibInspectionVisitor(
@@ -64,5 +74,56 @@ class KotlinGradleDslInspectionProvider : GradleDslInspectionProvider {
         isOnTheFly: Boolean
     ): PsiElementVisitor {
         return RedundantKotlinStdLibInspectionVisitor(holder)
+    }
+
+    override fun isAvoidApplyPluginMethodInspectionAvailable(file: PsiFile): Boolean =
+        isSuitableGradleKtsFile(file)
+
+    override fun getAvoidApplyPluginMethodInspectionVisitor(
+        holder: ProblemsHolder,
+        isOnTheFly: Boolean
+    ): PsiElementVisitor {
+        return KotlinAvoidApplyPluginMethodInspectionVisitor(holder)
+    }
+
+    override fun isAvoidRepositoriesInBuildGradleInspectionAvailable(file: PsiFile): Boolean =
+        file is KtFile && FileUtilRt.fileNameEquals(file.name, GradleConstants.KOTLIN_DSL_SCRIPT_NAME)
+
+    override fun getAvoidRepositoriesInBuildGradleInspectionVisitor(
+        holder: ProblemsHolder,
+        isOnTheFly: Boolean
+    ): PsiElementVisitor {
+        if (!isOnTheFly) return PsiElementVisitor.EMPTY_VISITOR // probably better done interactively
+        return KotlinAvoidRepositoriesInBuildGradleInspectionVisitor(holder)
+    }
+
+    override fun isAvoidDuplicateDependenciesInspectionAvailable(file: PsiFile): Boolean =
+        isSuitableGradleKtsFile(file)
+
+    override fun getAvoidDuplicateDependenciesInspectionVisitor(
+        holder: ProblemsHolder,
+        isOnTheFly: Boolean
+    ): PsiElementVisitor {
+        return KotlinAvoidDuplicateDependenciesInspectionVisitor(holder, isOnTheFly)
+    }
+
+    override fun isTaskMissingDescriptionInspectionAvailable(file: PsiFile): Boolean =
+        isSuitableGradleKtsFile(file)
+
+    override fun getTaskMissingDescriptionInspectionVisitor(
+        holder: ProblemsHolder,
+        onTheFly: Boolean
+    ): PsiElementVisitor {
+        return KotlinTaskMissingDescriptionInspectionVisitor(holder)
+    }
+
+    override fun isAvoidDuplicateRepositoriesInspectionAvailable(file: PsiFile): Boolean =
+        isSuitableGradleKtsFile(file)
+
+    override fun getAvoidDuplicateRepositoriesInspectionVisitor(
+        holder: ProblemsHolder,
+        isOnTheFly: Boolean
+    ): PsiElementVisitor {
+        return KotlinAvoidDuplicateRepositoriesInspectionVisitor(holder)
     }
 }

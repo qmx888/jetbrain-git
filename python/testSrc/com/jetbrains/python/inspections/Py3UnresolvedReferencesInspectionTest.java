@@ -1,20 +1,7 @@
-/*
- * Copyright 2000-2017 JetBrains s.r.o.
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- * http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- */
+// Copyright 2000-2026 JetBrains s.r.o. and contributors. Use of this source code is governed by the Apache 2.0 license.
 package com.jetbrains.python.inspections;
 
+import com.intellij.idea.TestFor;
 import com.intellij.lang.FileASTNode;
 import com.intellij.openapi.module.Module;
 import com.intellij.openapi.project.Project;
@@ -50,7 +37,11 @@ public class Py3UnresolvedReferencesInspectionTest extends PyInspectionTestCase 
   }
 
   protected void doMultiFileTest(@NotNull String filename, @NotNull List<String> sourceRoots) {
-    myFixture.copyDirectoryToProject(getTestDirectoryPath(), "");
+    doMultiFileTest(getTestName(false), filename, sourceRoots);
+  }
+
+  protected void doMultiFileTest(@NotNull String testDirectory, @NotNull String filename, @NotNull List<String> sourceRoots) {
+    myFixture.copyDirectoryToProject(TEST_DIRECTORY + testDirectory, "");
     final Module module = myFixture.getModule();
     for (String root : sourceRoots) {
       PsiTestUtil.addSourceRoot(module, myFixture.findFileInTempDir(root));
@@ -524,6 +515,26 @@ public class Py3UnresolvedReferencesInspectionTest extends PyInspectionTestCase 
     });
   }
 
+  // PY-55589
+  public void testPartialStubPackageUser() {
+    doMultiFileTest("a.py");
+  }
+
+  // PY-55589
+  public void testPartialStubPackageUserNested() {
+    doMultiFileTest("a/b.py");
+  }
+
+  // PY-55589
+  public void testPartialStubPackageUserNestedWithSiblingStub() {
+    doMultiFileTest("a/b.py");
+  }
+
+  // PY-55589
+  public void testPartialStubPackageUserNestedWithSiblingStubSourceRoot() {
+    doMultiFileTest("PartialStubPackageUserNestedWithSiblingStub", "a/b.py", Collections.singletonList("mypackage-stubs"));
+  }
+
   // PY-85880
   public void testLiteralUnionInTuple() {
     doTestByText("""
@@ -543,7 +554,7 @@ public class Py3UnresolvedReferencesInspectionTest extends PyInspectionTestCase 
                    
                    def f(e: Literal[1, 2]):
                        a: tuple | None = None
-                       _ = e <weak_warning descr="Member 'None' of 'tuple | None' does not have attribute '__contains__'">in</weak_warning> a
+                       _ = e <weak_warning descr="Member 'None' of 'tuple[Any, ...] | None' does not have attribute '__contains__'">in</weak_warning> a
                    """);
   }
 
@@ -589,5 +600,96 @@ public class Py3UnresolvedReferencesInspectionTest extends PyInspectionTestCase 
 
     assertSdkRootsNotParsed(aPy);
     Reference.reachabilityFence(cPyNode);
+  }
+
+  // PY-87343
+  public void testNewTypeUnion() {
+    doTestByText("""
+                   from typing import NewType
+                   
+                   MyId = NewType("MyId", int)
+                   
+                   val: MyId | None = None
+                   """);
+  }
+
+  // PY-89245
+  public void testFlakyLoop() {
+    doTestByText("""
+                   class ListNode:
+                       def __init__(self, val=0, next=None):
+                           self.val = val
+                           self.next = next
+                   
+                   
+                   def find_by_value(node: ListNode | None, val: int) -> ListNode | None:
+                       while node is not None and node.val != val:
+                           node = node.next
+                       return node
+                   """);
+  }
+
+  // PY-40883
+  public void testStrictClassAttributes() {
+    doTest();
+  }
+
+  // PY-40883
+  public void testStrictClassAttributesOff() {
+    final PyUnresolvedReferencesInspection inspection = new PyUnresolvedReferencesInspection();
+    inspection.strictClassAttributes = false;
+    myFixture.enableInspections(inspection);
+    myFixture.configureByFile(getTestCaseDirectory() + getTestName(true) + ".py");
+    myFixture.checkHighlighting(isWarning(), isInfo(), isWeakWarning());
+  }
+
+  @TestFor(issues="PY-87799")
+  public void testStrictInstanceAttributes() {
+    doTest();
+  }
+
+  @TestFor(issues="PY-87799")
+  public void testStrictInstanceAttributesOff() {
+    final PyUnresolvedReferencesInspection inspection = new PyUnresolvedReferencesInspection();
+    inspection.strictInstanceAttributes = false;
+    myFixture.enableInspections(inspection);
+    myFixture.configureByFile(getTestCaseDirectory() + getTestName(true) + ".py");
+    myFixture.checkHighlighting(isWarning(), isInfo(), isWeakWarning());
+  }
+
+  @TestFor(issues="PY-82245")
+  public void testStringInAnnotated() {
+    doTestByText(
+      """
+        from typing import Annotated
+        
+        type A = Annotated[str, print(end="foo")]
+        """
+    );
+  }
+
+  @TestFor(issues = "PY-80622")
+  public void testAugAssignmentRaddDefinedButIaddMissingOnTarget() {
+    doTestByText("""
+                   class A: pass
+                   class B:
+                       def __radd__(self, other: A) -> str: ...
+                   
+                   a = A()
+                   a += B()  # ok
+                   
+                   b = B()
+                   b <warning descr="Class 'B' does not define '__iadd__', so the '+=' operator cannot be used on its instances">+=</warning> A()
+                   """);
+  }
+
+  @TestFor(issues = "PY-80622")
+  public void testAugAssignmentIaddNotDefinedOnClass(){
+    doTestByText("""
+                   class A: pass
+                   
+                   a = A()
+                   a <warning descr="Class 'A' does not define '__iadd__', so the '+=' operator cannot be used on its instances">+=</warning> a
+                   """);
   }
 }

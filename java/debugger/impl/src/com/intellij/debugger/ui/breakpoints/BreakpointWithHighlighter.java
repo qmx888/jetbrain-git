@@ -35,7 +35,6 @@ import com.intellij.openapi.vfs.VirtualFile;
 import com.intellij.psi.PsiClass;
 import com.intellij.psi.PsiFile;
 import com.intellij.psi.jsp.JspFile;
-import com.intellij.ui.LayeredIcon;
 import com.intellij.ui.classFilter.ClassFilter;
 import com.intellij.util.ObjectUtils;
 import com.intellij.util.SlowOperations;
@@ -182,17 +181,12 @@ public abstract class BreakpointWithHighlighter<P extends JavaBreakpointProperti
 
     InstrumentationBreakpointState info = requestsManager.getInstrumentationInfo(this);
     if (info != null && info.isInstrumentationModeEnabled() && ApplicationManager.getApplication().isInternal()) {
-      LayeredIcon newIcon = new LayeredIcon(2);
-      Icon breakpointIcon;
       if (DebuggerSettings.SUSPEND_NONE.equals(getSuspendPolicy())) {
-        breakpointIcon = AllIcons.Debugger.Db_no_suspend_breakpoint;
+        return AllIcons.Breakpoints.LoggingInstrumentation;
       }
       else {
-        breakpointIcon = AllIcons.Debugger.Db_set_breakpoint;
+        return AllIcons.Breakpoints.ConditionalInstrumentation;
       }
-      newIcon.setIcon(breakpointIcon, 0);
-      newIcon.setIcon(AllIcons.Nodes.Module8x8, 1, 0, 0);
-      return newIcon;
     }
 
     if (isVerified) {
@@ -221,7 +215,7 @@ public abstract class BreakpointWithHighlighter<P extends JavaBreakpointProperti
   @Override
   void scheduleReload() {
     try (AccessToken ignore = SlowOperations.knownIssue("IDEA-360452, EA-1479781")) {
-      resetSourcePosition(); // sync init source position just in case
+      ReadAction.runBlocking(() -> resetSourcePosition()); // sync init source position just in case
     }
     super.scheduleReload();
   }

@@ -1,86 +1,317 @@
 // Copyright 2000-2026 JetBrains s.r.o. and contributors. Use of this source code is governed by the Apache 2.0 license.
+
+@file:Suppress("ReplaceGetOrSet")
+
 package com.intellij.agent.workbench.codex.sessions.backend.rollout
 
-// @spec community/plugins/agent-workbench/spec/agent-sessions-codex-rollout-source.spec.md
+// @spec community/plugins/agent-workbench/spec/sessions/agent-sessions-codex-rollout-source.spec.md
 
-import com.fasterxml.jackson.core.JsonFactory
-import com.fasterxml.jackson.core.JsonParser
-import com.fasterxml.jackson.core.JsonToken
-import com.intellij.agent.workbench.codex.common.CodexThread
-import com.intellij.agent.workbench.codex.common.forEachObjectField
-import com.intellij.agent.workbench.codex.common.readStringOrNull
+import com.intellij.agent.workbench.codex.common.normalizeRootPath
 import com.intellij.agent.workbench.codex.sessions.backend.CodexBackendThread
-import com.intellij.agent.workbench.codex.sessions.backend.CodexSessionActivity
+import com.intellij.agent.workbench.codex.sessions.backend.CodexBackendThreadRefreshResult
 import com.intellij.agent.workbench.codex.sessions.backend.CodexSessionBackend
+import com.intellij.agent.workbench.codex.sessions.backend.toAgentThreadActivity
+import com.intellij.agent.workbench.common.AgentThreadActivity
+import com.intellij.agent.workbench.common.AgentThreadActivityReport
 import com.intellij.agent.workbench.codex.sessions.resolveProjectDirectoryFromPath
-import com.intellij.agent.workbench.json.WorkbenchJsonlScanner
+import com.intellij.agent.workbench.filewatch.agentWorkbenchImmediateFileChangeFlow
+import com.intellij.agent.workbench.json.filebacked.FileBackedSessionChangeSet
+import com.intellij.agent.workbench.json.filebacked.createFileBackedSessionChangeFlow
+import com.intellij.agent.workbench.json.filebacked.toFileBackedSessionPathKey
+import com.intellij.agent.workbench.sessions.core.providers.AgentSessionSourceUpdate
+import com.intellij.agent.workbench.sessions.core.providers.AgentSessionSourceUpdateEvent
+import com.intellij.agent.workbench.sessions.core.providers.AgentSessionThreadActivityUpdate
+import com.intellij.agent.workbench.sessions.core.providers.AgentSessionThreadPresentationUpdate
+import com.intellij.openapi.diagnostic.debug
 import com.intellij.openapi.diagnostic.logger
 import com.intellij.openapi.project.Project
-import it.unimi.dsi.fastutil.objects.Object2ObjectOpenHashMap
-import it.unimi.dsi.fastutil.objects.ObjectArrayList
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.channels.awaitClose
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
-import kotlinx.coroutines.flow.callbackFlow
+import kotlinx.coroutines.flow.channelFlow
 import kotlinx.coroutines.flow.conflate
+import kotlinx.coroutines.flow.emitAll
+import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.mapNotNull
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import java.nio.file.ClosedWatchServiceException
-import java.nio.file.FileSystems
-import java.nio.file.FileVisitResult
-import java.nio.file.Files
-import java.nio.file.LinkOption
 import java.nio.file.Path
-import java.nio.file.SimpleFileVisitor
-import java.nio.file.StandardWatchEventKinds
-import java.nio.file.WatchKey
-import java.nio.file.attribute.BasicFileAttributes
-import java.time.Instant
-import java.time.format.DateTimeParseException
-import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.io.path.invariantSeparatorsPathString
-
-private const val ROLLOUT_FILE_PREFIX = "rollout-"
-private const val ROLLOUT_FILE_SUFFIX = ".jsonl"
-private const val MAX_TITLE_LENGTH = 120
-private const val USER_MESSAGE_BEGIN = "## My request for Codex:"
-private const val ENVIRONMENT_CONTEXT_OPEN_TAG = "<environment_context>"
-private const val TURN_ABORTED_OPEN_TAG = "<turn_aborted>"
+import kotlin.time.Duration.Companion.milliseconds
 
 private val LOG = logger<CodexRolloutSessionBackend>()
+private const val CODEX_ROLLOUT_TRAILING_REFRESH_DELAY_MS = 250L
 
 internal class CodexRolloutSessionBackend(
   private val codexHomeProvider: () -> Path = { Path.of(System.getProperty("user.home"), ".codex") },
+  rolloutChangeSource: (() -> Flow<FileBackedSessionChangeSet>)? = null,
+  private val trailingRefreshDelayMs: Long = CODEX_ROLLOUT_TRAILING_REFRESH_DELAY_MS,
+  private val immediateFileChangeFlow: (Collection<Path>) -> Flow<Path> = { paths -> agentWorkbenchImmediateFileChangeFlow(paths) },
 ) : CodexSessionBackend {
-  private val jsonFactory = JsonFactory()
-  private val cacheLock = Any()
-  private val cachedFilesByPath = Object2ObjectOpenHashMap<String, CachedRolloutFile>()
-  private val threadsByCwd = Object2ObjectOpenHashMap<String, ObjectArrayList<CodexBackendThread>>()
+  private val parser = CodexRolloutParser()
+  private val threadIndex = CodexRolloutThreadIndex(codexHomeProvider = codexHomeProvider, parseRollout = parser::parse)
+  private val projectFilesChangedAtByPathKey = HashMap<String, Long>()
+  private val projectFilesChangedAtLock = Any()
+  private val activeThreadActivityByPathKey = HashMap<String, ActiveThreadActivityHint>()
+  private val activeThreadActivityLock = Any()
+  private val rolloutUpdates: Flow<AgentSessionSourceUpdateEvent> = createUpdatesFlow(
+    rolloutChangeSource?.invoke() ?: createWatcherUpdates()
+  ).conflate()
 
-  override val updates: Flow<Unit> = callbackFlow {
-    val watcher = runCatching {
-      CodexRolloutSessionsWatcher(codexHomeProvider = codexHomeProvider) {
-        trySend(Unit)
+  internal val sessionUpdates: Flow<AgentSessionSourceUpdateEvent> = rolloutUpdates
+
+  override val updates: Flow<Unit> = rolloutUpdates.map {}
+
+  fun activeThreadUpdateEvents(path: String, threadId: String): Flow<AgentSessionSourceUpdateEvent> {
+    return flow {
+      val files = withContext(Dispatchers.IO) {
+        resolveActiveThreadFilePaths(path = path, threadId = threadId)
       }
-    }.onFailure { t ->
-      LOG.warn("Failed to initialize Codex rollout watcher", t)
-    }.getOrNull()
+      LOG.debug {
+        "Resolved Codex active rollout files for immediate watch (path=$path, threadId=$threadId, files=${files.size})"
+      }
+      emitAll(immediateFileChangeFlow(files).mapNotNull { changedPath ->
+        withContext(Dispatchers.IO) {
+          buildActiveThreadUpdate(changedPath)
+        }
+      })
+    }
+  }
 
-    if (watcher == null) {
-      awaitClose { }
-      return@callbackFlow
+  internal fun resolveActiveThreadFilePaths(path: String, threadId: String): List<Path> {
+    return threadIndex.resolveThreadFilePaths(path = path, threadId = threadId)
+  }
+
+  private fun createUpdatesFlow(sourceUpdates: Flow<FileBackedSessionChangeSet>): Flow<AgentSessionSourceUpdateEvent> {
+    return channelFlow {
+      var trailingRefreshJob: Job? = null
+      sourceUpdates.collect { changeSet ->
+        threadIndex.markDirty(changeSet)
+        send(resolveSessionUpdate(changeSet))
+
+        trailingRefreshJob?.cancel()
+        trailingRefreshJob = launch {
+          delay(trailingRefreshDelayMs.milliseconds)
+          send(resolveSessionUpdate(changeSet))
+        }
+      }
+    }
+  }
+
+  private suspend fun resolveSessionUpdate(changeSet: FileBackedSessionChangeSet): AgentSessionSourceUpdateEvent {
+    return withContext(Dispatchers.IO) {
+      buildSessionUpdate(changeSet)
+    }
+  }
+
+  private fun buildSessionUpdate(changeSet: FileBackedSessionChangeSet): AgentSessionSourceUpdateEvent {
+    if (changeSet.requiresFullRescan) {
+      LOG.debug {
+        "Codex rollout update is unscoped (fullRescan=true, changedPaths=${changeSet.changedPaths.size})"
+      }
+      return rolloutSessionUpdate(mayHaveChangedProjectFiles = true)
     }
 
-    awaitClose {
-      watcher.close()
+    if (changeSet.changedPaths.isEmpty()) {
+      LOG.debug { "Codex rollout update is unscoped (refresh ping)" }
+      return rolloutSessionUpdate()
     }
-  }.conflate()
+
+    val rolloutPaths = changeSet.changedPaths.filter(::isRolloutPath)
+    if (rolloutPaths.isEmpty()) {
+      LOG.debug { "Codex rollout update is unscoped (no rollout paths in changedPaths=${changeSet.changedPaths.size})" }
+      return rolloutSessionUpdate()
+    }
+
+    val scopedPaths = LinkedHashSet<String>()
+    val threadIds = LinkedHashSet<String>()
+    val activityUpdatesByThreadId = LinkedHashMap<String, AgentSessionThreadActivityUpdate>()
+    val presentationUpdatesByThreadId = LinkedHashMap<String, AgentSessionThreadPresentationUpdate>()
+    var mayHaveChangedProjectFiles = false
+    var changedProjectFilePaths: LinkedHashSet<String>? = LinkedHashSet()
+    var failedParses = 0
+    for (path in rolloutPaths) {
+      val parsedThread = parser.parse(path)
+      if (parsedThread == null) {
+        failedParses++
+        continue
+      }
+      val consumedProjectFileChangeEvidence = consumeProjectFileChangeEvidence(parsedThread)
+      if (consumedProjectFileChangeEvidence != null) {
+        mayHaveChangedProjectFiles = true
+        val evidenceChangedProjectFilePaths = consumedProjectFileChangeEvidence.changedProjectFilePaths
+        if (evidenceChangedProjectFilePaths == null) {
+          changedProjectFilePaths = null
+        }
+        else {
+          changedProjectFilePaths?.addAll(evidenceChangedProjectFilePaths)
+        }
+      }
+      scopedPaths += parsedThread.normalizedCwd
+      threadIds += parsedThread.thread.thread.id
+      parsedThread.parentThreadId?.let(threadIds::add)
+      if (parsedThread.parentThreadId == null) {
+        val threadId = parsedThread.thread.thread.id
+        val activityReport = AgentThreadActivityReport(
+          rowActivity = parsedThread.thread.activity.toAgentThreadActivity(),
+          chromeActivity = parsedThread.thread.summaryActivity?.toAgentThreadActivity(),
+        )
+        activityUpdatesByThreadId[threadId] = AgentSessionThreadActivityUpdate(
+          activityReport = activityReport,
+          updatedAt = parsedThread.thread.thread.updatedAt,
+        )
+        presentationUpdatesByThreadId[threadId] = AgentSessionThreadPresentationUpdate(
+          title = parsedThread.thread.thread.title.takeIf { parsedThread.hasExplicitTitle },
+          activityReport = activityReport,
+          updatedAt = parsedThread.thread.thread.updatedAt,
+        )
+      }
+    }
+
+    if (failedParses > 0 || scopedPaths.isEmpty()) {
+      LOG.debug {
+        "Codex rollout update falls back to unscoped refresh " +
+        "(changedRolloutPaths=${rolloutPaths.size}, failedParses=$failedParses, scopedPaths=${scopedPaths.size})"
+      }
+      return rolloutSessionUpdate(
+        mayHaveChangedProjectFiles = mayHaveChangedProjectFiles,
+        changedProjectFilePaths = changedProjectFilePathsForUpdate(mayHaveChangedProjectFiles, changedProjectFilePaths),
+      )
+    }
+
+    LOG.debug {
+      "Codex rollout update scoped (changedRolloutPaths=${rolloutPaths.size}, scopedPaths=${scopedPaths.size}, threadIds=${threadIds.size})"
+    }
+    return AgentSessionSourceUpdateEvent(
+      type = AgentSessionSourceUpdate.HINTS_CHANGED,
+      scopedPaths = scopedPaths,
+      threadIds = threadIds.takeIf { it.isNotEmpty() },
+      activityUpdatesByThreadId = activityUpdatesByThreadId,
+      presentationUpdatesByThreadId = presentationUpdatesByThreadId,
+      mayHaveChangedProjectFiles = mayHaveChangedProjectFiles,
+      changedProjectFilePaths = changedProjectFilePathsForUpdate(mayHaveChangedProjectFiles, changedProjectFilePaths),
+    )
+  }
+
+  private fun buildActiveThreadUpdate(path: Path): AgentSessionSourceUpdateEvent? {
+    if (!isRolloutPath(path)) {
+      return null
+    }
+    val parsedThread = parser.parse(path) ?: return null
+    val consumedProjectFileChangeEvidence = consumeProjectFileChangeEvidence(parsedThread)
+    val activeThreadActivityHint = parsedThread.toActiveThreadActivityHint()
+    val hasActivityChange = activeThreadActivityHint != null && rememberActiveThreadActivityHint(
+      path = parsedThread.path,
+      activityHint = activeThreadActivityHint,
+    )
+    if (consumedProjectFileChangeEvidence == null && !hasActivityChange) {
+      return null
+    }
+
+    val mayHaveChangedProjectFiles = consumedProjectFileChangeEvidence != null
+    return AgentSessionSourceUpdateEvent(
+      type = AgentSessionSourceUpdate.HINTS_CHANGED,
+      scopedPaths = setOf(parsedThread.normalizedCwd),
+      activityUpdatesByThreadId = activeThreadActivityHint?.let { hint ->
+        mapOf(
+          hint.threadId to AgentSessionThreadActivityUpdate(
+            activityReport = AgentThreadActivityReport(rowActivity = hint.activity, chromeActivity = hint.summaryActivity),
+            updatedAt = hint.updatedAt,
+          )
+        )
+      }.orEmpty(),
+      presentationUpdatesByThreadId = activeThreadActivityHint?.let { hint ->
+        mapOf(
+          hint.threadId to AgentSessionThreadPresentationUpdate(
+            title = hint.title,
+            activityReport = AgentThreadActivityReport(rowActivity = hint.activity, chromeActivity = hint.summaryActivity),
+            updatedAt = hint.updatedAt,
+          )
+        )
+      }.orEmpty(),
+      mayHaveChangedProjectFiles = mayHaveChangedProjectFiles,
+      changedProjectFilePaths = consumedProjectFileChangeEvidence?.changedProjectFilePaths,
+    )
+  }
+
+  private fun rememberActiveThreadActivityHint(path: Path, activityHint: ActiveThreadActivityHint): Boolean {
+    val pathKey = toFileBackedSessionPathKey(path)
+    return synchronized(activeThreadActivityLock) {
+      if (activeThreadActivityByPathKey[pathKey] == activityHint) {
+        false
+      }
+      else {
+        activeThreadActivityByPathKey[pathKey] = activityHint
+        true
+      }
+    }
+  }
+
+  private fun consumeProjectFileChangeEvidence(parsedThread: ParsedRolloutThread): ConsumedProjectFileChangeEvidence? {
+    val pathKey = toFileBackedSessionPathKey(parsedThread.path)
+    return synchronized(projectFilesChangedAtLock) {
+      val previousProjectFilesChangedAt = projectFilesChangedAtByPathKey[pathKey] ?: Long.MIN_VALUE
+      val newEvidence = parsedThread.projectFileChangeEvidence.filter { evidence ->
+        evidence.timestampMillis > previousProjectFilesChangedAt
+      }
+      if (newEvidence.isEmpty()) {
+        null
+      }
+      else {
+        val projectFilesChangedAt = newEvidence.maxOf { it.timestampMillis }
+        projectFilesChangedAtByPathKey[pathKey] = projectFilesChangedAt
+        val changedProjectFilePaths = collectChangedProjectFilePaths(newEvidence)
+        ConsumedProjectFileChangeEvidence(changedProjectFilePaths = changedProjectFilePaths)
+      }
+    }
+  }
+
+  private fun rememberCachedProjectFileChangeEvidence() {
+    val cachedFiles = threadIndex.snapshotCachedFiles()
+    synchronized(projectFilesChangedAtLock) {
+      // Prune entries whose sessions are no longer tracked so the cache cannot grow unbounded
+      // across long IDE sessions that churn many ephemeral rollout files.
+      if (projectFilesChangedAtByPathKey.isNotEmpty()) {
+        projectFilesChangedAtByPathKey.keys.retainAll(cachedFiles.keys)
+      }
+      for ((pathKey, cachedFile) in cachedFiles) {
+        val projectFilesChangedAt = cachedFile.parsedValue?.projectFilesChangedAt ?: continue
+        if (projectFilesChangedAt == Long.MIN_VALUE) {
+          continue
+        }
+        val previousProjectFilesChangedAt = projectFilesChangedAtByPathKey[pathKey] ?: Long.MIN_VALUE
+        if (projectFilesChangedAt > previousProjectFilesChangedAt) {
+          projectFilesChangedAtByPathKey[pathKey] = projectFilesChangedAt
+        }
+      }
+    }
+  }
+
+  private fun createWatcherUpdates(): Flow<FileBackedSessionChangeSet> {
+    return createFileBackedSessionChangeFlow(
+      logger = LOG,
+      watcherName = "Codex rollout",
+      initContext = { "codexHome=${codexHomeProvider()}" },
+      emitInitialRefreshPing = true,
+    ) { scope, onChange ->
+      CodexRolloutSessionsWatcher(
+        codexHomeProvider = codexHomeProvider,
+        scope = scope,
+        onRolloutChange = onChange,
+      )
+    }
+  }
 
   override suspend fun listThreads(path: String, @Suppress("UNUSED_PARAMETER") openProject: Project?): List<CodexBackendThread> {
     return withContext(Dispatchers.IO) {
       val workingDirectory = resolveProjectDirectoryFromPath(path)
-        ?: return@withContext emptyList()
+                             ?: return@withContext emptyList()
       val cwdFilter = normalizeRootPath(workingDirectory.invariantSeparatorsPathString)
-      collectThreadsByCwd(setOf(cwdFilter))[cwdFilter].orEmpty()
+      val threadsByCwd = threadIndex.collectByCwd(setOf(cwdFilter))
+      rememberCachedProjectFileChangeEvidence()
+      threadsByCwd[cwdFilter].orEmpty()
     }
   }
 
@@ -89,558 +320,95 @@ internal class CodexRolloutSessionBackend(
       val pathFilters = resolvePathFilters(paths)
       if (pathFilters.isEmpty()) return@withContext emptyMap()
 
-      val threadsByCwd = collectThreadsByCwd(pathFilters.map { (_, cwdFilter) -> cwdFilter }.toSet())
+      val threadsByCwd = threadIndex.collectByCwd(pathFilters.mapTo(HashSet(pathFilters.size)) { (_, cwdFilter) -> cwdFilter })
+      rememberCachedProjectFileChangeEvidence()
       pathFilters.associate { (path, cwdFilter) ->
-        path to threadsByCwd[cwdFilter].orEmpty()
+        path to threadsByCwd.get(cwdFilter).orEmpty()
       }
     }
   }
 
-  private fun collectThreadsByCwd(cwdFilters: Set<String>): Map<String, List<CodexBackendThread>> {
-    if (cwdFilters.isEmpty()) return emptyMap()
-
-    val sessionsDir = codexHomeProvider().resolve("sessions")
-    if (!Files.isDirectory(sessionsDir)) {
-      synchronized(cacheLock) {
-        cachedFilesByPath.clear()
-        threadsByCwd.clear()
-      }
-      return emptyMap()
-    }
-
-    val scannedFiles = try {
-      scanRolloutFiles(sessionsDir)
-    }
-    catch (_: Throwable) {
-      return emptyMap()
-    }
-
-    val filesToParse = ObjectArrayList<RolloutFileStat>()
-    var removedAny = false
-    synchronized(cacheLock) {
-      val iterator = cachedFilesByPath.object2ObjectEntrySet().iterator()
-      while (iterator.hasNext()) {
-        val entry = iterator.next()
-        if (!scannedFiles.containsKey(entry.key)) {
-          iterator.remove()
-          removedAny = true
-        }
-      }
-
-      for (entry in scannedFiles.object2ObjectEntrySet()) {
-        val stat = entry.value
-        val cached = cachedFilesByPath[entry.key]
-        if (cached == null || cached.lastModifiedMs != stat.lastModifiedMs || cached.sizeBytes != stat.sizeBytes) {
-          filesToParse.add(stat)
-        }
-      }
-    }
-
-    if (filesToParse.isNotEmpty()) {
-      val parsedUpdates = Object2ObjectOpenHashMap<String, CachedRolloutFile>(filesToParse.size)
-      for (stat in filesToParse) {
-        parsedUpdates[stat.pathKey] = CachedRolloutFile(
-          lastModifiedMs = stat.lastModifiedMs,
-          sizeBytes = stat.sizeBytes,
-          parsedThread = parseRolloutFile(stat.path),
-        )
-      }
-      synchronized(cacheLock) {
-        for (entry in parsedUpdates.object2ObjectEntrySet()) {
-          cachedFilesByPath[entry.key] = entry.value
-        }
-      }
-    }
-
-    if (removedAny || filesToParse.isNotEmpty()) {
-      synchronized(cacheLock) {
-        rebuildThreadsByCwd()
-      }
-    }
-
-    synchronized(cacheLock) {
-      val result = Object2ObjectOpenHashMap<String, List<CodexBackendThread>>(cwdFilters.size)
-      for (cwdFilter in cwdFilters) {
-        val threads = threadsByCwd[cwdFilter] ?: continue
-        result[cwdFilter] = ArrayList(threads)
-      }
-      return result
-    }
-  }
-
-  private fun rebuildThreadsByCwd() {
-    threadsByCwd.clear()
-    for (entry in cachedFilesByPath.object2ObjectEntrySet()) {
-      val parsedThread = entry.value.parsedThread ?: continue
-      var threads = threadsByCwd[parsedThread.normalizedCwd]
-      if (threads == null) {
-        threads = ObjectArrayList()
-        threadsByCwd[parsedThread.normalizedCwd] = threads
-      }
-      threads.add(parsedThread.thread)
-    }
-
-    for (threads in threadsByCwd.values) {
-      threads.sortWith(Comparator { left, right ->
-        right.thread.updatedAt.compareTo(left.thread.updatedAt)
-      })
-    }
-  }
-
-  private fun scanRolloutFiles(sessionsDir: Path): Object2ObjectOpenHashMap<String, RolloutFileStat> {
-    val scannedFiles = Object2ObjectOpenHashMap<String, RolloutFileStat>()
-    Files.walk(sessionsDir).use { stream ->
-      val iterator = stream.iterator()
-      while (iterator.hasNext()) {
-        val candidate = iterator.next()
-        if (!Files.isRegularFile(candidate)) continue
-        val fileName = candidate.fileName?.toString() ?: continue
-        if (!isRolloutFileName(fileName)) continue
-        val lastModifiedMs = try {
-          Files.getLastModifiedTime(candidate).toMillis()
-        }
-        catch (_: Throwable) {
-          continue
-        }
-        val sizeBytes = try {
-          Files.size(candidate)
-        }
-        catch (_: Throwable) {
-          continue
-        }
-
-        val pathKey = candidate.invariantSeparatorsPathString
-        scannedFiles[pathKey] = RolloutFileStat(
-          pathKey = pathKey,
-          path = candidate,
-          lastModifiedMs = lastModifiedMs,
-          sizeBytes = sizeBytes,
-        )
-      }
-    }
-
-    return scannedFiles
-  }
-
-  private fun resolvePathFilters(paths: List<String>): List<Pair<String, String>> {
-    return paths.mapNotNull { path ->
-      resolveProjectDirectoryFromPath(path)?.let { directory ->
-        path to normalizeRootPath(directory.invariantSeparatorsPathString)
-      }
-    }
-  }
-
-  private fun parseRolloutFile(path: Path): ParsedRolloutThread? {
-    val state = try {
-      WorkbenchJsonlScanner.scanJsonObjects(
-        path = path,
-        jsonFactory = jsonFactory,
-        newState = ::RolloutParseState,
-      ) { parser, parseState ->
-        val event = parseEvent(parser) ?: return@scanJsonObjects true
-
-        parseState.updatedAt = maxTimestamp(parseState.updatedAt, event.timestampMs)
-        parseState.updatedAt = maxTimestamp(parseState.updatedAt, event.sessionTimestampMs)
-        parseState.sessionId = parseState.sessionId ?: event.sessionId
-        parseState.sessionCwd = parseState.sessionCwd ?: event.sessionCwd
-        parseState.gitBranch = parseState.gitBranch ?: event.gitBranch
-
-        val eventTimestamp = event.timestampMs
-        when (event.topLevelType) {
-          "event_msg" -> {
-            when (event.payloadType) {
-              "task_started" -> parseState.processing = true
-              "task_complete", "turn_aborted" -> parseState.processing = false
-              "user_message" -> {
-                parseState.latestUserMessageAt = maxTimestamp(parseState.latestUserMessageAt, eventTimestamp)
-                parseState.title = parseState.title ?: extractTitle(event.payloadMessage)
-                val pendingInputAt = parseState.pendingUserInputAt
-                if (pendingInputAt != null && eventTimestamp != null && eventTimestamp >= pendingInputAt) {
-                  parseState.pendingUserInputAt = null
-                }
-              }
-
-              "agent_message" -> {
-                parseState.latestAgentMessageAt = maxTimestamp(parseState.latestAgentMessageAt, eventTimestamp)
-              }
-            }
-
-            if (event.payloadType?.contains("requestUserInput", ignoreCase = true) == true) {
-              parseState.pendingUserInputAt = maxTimestamp(parseState.pendingUserInputAt ?: Long.MIN_VALUE, eventTimestamp)
-            }
-
-            when (event.itemType) {
-              "enteredReviewMode" -> parseState.reviewing = true
-              "exitedReviewMode" -> parseState.reviewing = false
-            }
-          }
-
-          "response_item" -> {
-            if (event.payloadType == "message") {
-              when (event.payloadRole) {
-                "user" -> {
-                  parseState.latestUserMessageAt = maxTimestamp(parseState.latestUserMessageAt, eventTimestamp)
-                  val pendingInputAt = parseState.pendingUserInputAt
-                  if (pendingInputAt != null && eventTimestamp != null && eventTimestamp >= pendingInputAt) {
-                    parseState.pendingUserInputAt = null
-                  }
-                }
-
-                "assistant" -> {
-                  parseState.latestAgentMessageAt = maxTimestamp(parseState.latestAgentMessageAt, eventTimestamp)
-                }
-              }
-            }
-          }
-        }
-
-        true
-      }
-    }
-    catch (_: Throwable) {
+  override suspend fun refreshThreads(path: String, threadIds: Set<String>, openProject: Project?): CodexBackendThreadRefreshResult? {
+    if (threadIds.isEmpty()) {
       return null
     }
-
-    val normalizedCwd = normalizeRootPath(state.sessionCwd ?: return null)
-    val resolvedSessionId = state.sessionId ?: return null
-    val hasUnread = state.latestAgentMessageAt > state.latestUserMessageAt
-    val hasPendingUserInput = state.pendingUserInputAt != null
-    val activity = when {
-      hasPendingUserInput || hasUnread -> CodexSessionActivity.UNREAD
-      state.reviewing -> CodexSessionActivity.REVIEWING
-      state.processing -> CodexSessionActivity.PROCESSING
-      else -> CodexSessionActivity.READY
-    }
-
-    val fallbackUpdatedAt = runCatching { Files.getLastModifiedTime(path).toMillis() }.getOrDefault(0L)
-    val resolvedUpdatedAt = if (state.updatedAt > 0L) state.updatedAt else fallbackUpdatedAt
-    val resolvedTitle = state.title ?: "Thread ${resolvedSessionId.take(8)}"
-
-    return ParsedRolloutThread(
-      normalizedCwd = normalizedCwd,
-      thread = CodexBackendThread(
-        thread = CodexThread(
-          id = resolvedSessionId,
-          title = resolvedTitle,
-          updatedAt = resolvedUpdatedAt,
-          archived = false,
-          gitBranch = state.gitBranch,
-        ),
-        activity = activity,
-      ),
-    )
-  }
-
-  private fun parseEvent(parser: JsonParser): RolloutEvent? {
-    return try {
-      if (parser.currentToken != JsonToken.START_OBJECT) return null
-
-      var topLevelType: String? = null
-      var timestampMs: Long? = null
-      var payloadType: String? = null
-      var payloadRole: String? = null
-      var payloadMessage: String? = null
-      var sessionId: String? = null
-      var sessionCwd: String? = null
-      var sessionTimestampMs: Long? = null
-      var gitBranch: String? = null
-      var itemType: String? = null
-
-      forEachObjectField(parser) { fieldName ->
-        when (fieldName) {
-          "timestamp" -> timestampMs = parseIsoTimestamp(readStringOrNull(parser))
-          "type" -> topLevelType = readStringOrNull(parser)
-          "payload" -> {
-            if (parser.currentToken == JsonToken.START_OBJECT) {
-              forEachObjectField(parser) { payloadField ->
-                when (payloadField) {
-                  "type" -> payloadType = readStringOrNull(parser)
-                  "role" -> payloadRole = readStringOrNull(parser)
-                  "message" -> payloadMessage = readStringOrNull(parser)
-                  "id" -> sessionId = readStringOrNull(parser)
-                  "cwd" -> sessionCwd = readStringOrNull(parser)
-                  "timestamp" -> sessionTimestampMs = parseIsoTimestamp(readStringOrNull(parser))
-                  "git" -> {
-                    gitBranch = parseNestedStringField(parser, "branch")
-                  }
-
-                  "item" -> {
-                    itemType = parseNestedStringField(parser, "type")
-                  }
-
-                  else -> parser.skipChildren()
-                }
-                true
-              }
-            }
-            else {
-              parser.skipChildren()
-            }
-          }
-
-          else -> parser.skipChildren()
-        }
-        true
-      }
-
-      RolloutEvent(
-        topLevelType = topLevelType,
-        timestampMs = timestampMs,
-        payloadType = payloadType,
-        payloadRole = payloadRole,
-        payloadMessage = payloadMessage,
-        sessionId = sessionId,
-        sessionCwd = sessionCwd,
-        sessionTimestampMs = sessionTimestampMs,
-        gitBranch = gitBranch,
-        itemType = itemType,
+    return withContext(Dispatchers.IO) {
+      val workingDirectory = resolveProjectDirectoryFromPath(path)
+                             ?: return@withContext CodexBackendThreadRefreshResult()
+      val cwdFilter = normalizeRootPath(workingDirectory.invariantSeparatorsPathString)
+      CodexBackendThreadRefreshResult(
+        threads = threadIndex.collectByCwdAndThreadIds(cwdFilter = cwdFilter, threadIds = threadIds),
+        isComplete = false,
       )
     }
-    catch (_: Throwable) {
-      null
+  }
+}
+
+private fun resolvePathFilters(paths: List<String>): List<Pair<String, String>> {
+  return paths.mapNotNull { path ->
+    resolveProjectDirectoryFromPath(path)?.let { directory ->
+      path to normalizeRootPath(directory.invariantSeparatorsPathString)
     }
   }
 }
 
-private data class RolloutEvent(
-  @JvmField val topLevelType: String?,
-  @JvmField val timestampMs: Long?,
-  @JvmField val payloadType: String?,
-  @JvmField val payloadRole: String?,
-  @JvmField val payloadMessage: String?,
-  @JvmField val sessionId: String?,
-  @JvmField val sessionCwd: String?,
-  @JvmField val sessionTimestampMs: Long?,
-  @JvmField val gitBranch: String?,
-  @JvmField val itemType: String?,
-)
-
-private data class ParsedRolloutThread(
-  @JvmField val normalizedCwd: String,
-  @JvmField val thread: CodexBackendThread,
-)
-
-private data class RolloutParseState(
-  @JvmField var sessionId: String? = null,
-  @JvmField var sessionCwd: String? = null,
-  @JvmField var gitBranch: String? = null,
-  @JvmField var title: String? = null,
-  @JvmField var updatedAt: Long = 0L,
-  @JvmField var processing: Boolean = false,
-  @JvmField var reviewing: Boolean = false,
-  @JvmField var latestUserMessageAt: Long = Long.MIN_VALUE,
-  @JvmField var latestAgentMessageAt: Long = Long.MIN_VALUE,
-  @JvmField var pendingUserInputAt: Long? = null,
-)
-
-private data class RolloutFileStat(
-  @JvmField val pathKey: String,
-  @JvmField val path: Path,
-  @JvmField val lastModifiedMs: Long,
-  @JvmField val sizeBytes: Long,
-)
-
-private data class CachedRolloutFile(
-  @JvmField val lastModifiedMs: Long,
-  @JvmField val sizeBytes: Long,
-  @JvmField val parsedThread: ParsedRolloutThread?,
-)
-
-private class CodexRolloutSessionsWatcher(
-  private val codexHomeProvider: () -> Path,
-  private val onRolloutChange: () -> Unit,
-) : AutoCloseable {
-  private val watchService = FileSystems.getDefault().newWatchService()
-  private val running = AtomicBoolean(true)
-  private val watchKeysByPath = Object2ObjectOpenHashMap<WatchKey, Path>()
-  private val watchKeysLock = Any()
-  private val sessionsRoot: Path
-    get() = codexHomeProvider().resolve("sessions")
-
-  private val thread = Thread(::runWatchLoop, "CodexRolloutSessionBackendWatcher").apply {
-    isDaemon = true
-    start()
-  }
-
-  init {
-    registerInitialPaths()
-  }
-
-  override fun close() {
-    if (!running.compareAndSet(true, false)) return
-    watchService.close()
-    thread.interrupt()
-  }
-
-  private fun registerInitialPaths() {
-    val codexHome = codexHomeProvider()
-    if (Files.isDirectory(codexHome)) {
-      registerDirectory(codexHome)
-    }
-    val sessions = sessionsRoot
-    if (Files.isDirectory(sessions)) {
-      registerDirectoryRecursively(sessions)
-    }
-  }
-
-  private fun runWatchLoop() {
-    while (running.get()) {
-      val watchKey = try {
-        watchService.take()
-      }
-      catch (_: InterruptedException) {
-        continue
-      }
-      catch (_: ClosedWatchServiceException) {
-        break
-      }
-      catch (_: Throwable) {
-        continue
-      }
-
-      val watchedPath = synchronized(watchKeysLock) { watchKeysByPath[watchKey] }
-      if (watchedPath == null) {
-        watchKey.reset()
-        continue
-      }
-
-      var hasRolloutChange = false
-      for (event in watchKey.pollEvents()) {
-        val kind = event.kind()
-        if (kind == StandardWatchEventKinds.OVERFLOW) {
-          hasRolloutChange = true
-          continue
-        }
-
-        val contextPath = event.context() as? Path ?: continue
-        val eventPath = watchedPath.resolve(contextPath)
-
-        if (kind == StandardWatchEventKinds.ENTRY_CREATE && Files.isDirectory(eventPath, LinkOption.NOFOLLOW_LINKS)) {
-          registerDirectoryRecursively(eventPath)
-        }
-
-        if (isRolloutPath(eventPath)) {
-          hasRolloutChange = true
-        }
-      }
-
-      if (!watchKey.reset()) {
-        synchronized(watchKeysLock) {
-          watchKeysByPath.remove(watchKey)
-        }
-      }
-
-      if (hasRolloutChange) {
-        onRolloutChange()
-      }
-    }
-  }
-
-  private fun isRolloutPath(path: Path): Boolean {
-    val fileName = path.fileName?.toString() ?: return false
-    return path.startsWith(sessionsRoot) && isRolloutFileName(fileName)
-  }
-
-  private fun registerDirectoryRecursively(root: Path) {
-    if (!Files.isDirectory(root, LinkOption.NOFOLLOW_LINKS)) return
-
-    try {
-      Files.walkFileTree(root, object : SimpleFileVisitor<Path>() {
-        override fun preVisitDirectory(dir: Path, attrs: BasicFileAttributes): FileVisitResult {
-          registerDirectory(dir)
-          return FileVisitResult.CONTINUE
-        }
-      })
-    }
-    catch (_: Throwable) {
-    }
-  }
-
-  private fun registerDirectory(path: Path) {
-    try {
-      val watchKey = path.register(
-        watchService,
-        StandardWatchEventKinds.ENTRY_CREATE,
-        StandardWatchEventKinds.ENTRY_DELETE,
-        StandardWatchEventKinds.ENTRY_MODIFY,
-      )
-      synchronized(watchKeysLock) {
-        watchKeysByPath[watchKey] = path
-      }
-    }
-    catch (_: Throwable) {
-    }
-  }
+private fun rolloutSessionUpdate(
+  mayHaveChangedProjectFiles: Boolean = false,
+  changedProjectFilePaths: Set<String>? = null,
+): AgentSessionSourceUpdateEvent {
+  return AgentSessionSourceUpdateEvent(
+    type = AgentSessionSourceUpdate.HINTS_CHANGED,
+    mayHaveChangedProjectFiles = mayHaveChangedProjectFiles,
+    changedProjectFilePaths = changedProjectFilePaths,
+  )
 }
 
-private fun parseIsoTimestamp(value: String?): Long? {
-  val text = value?.trim().takeIf { !it.isNullOrEmpty() } ?: return null
-  return try {
-    Instant.parse(text).toEpochMilli()
-  }
-  catch (_: DateTimeParseException) {
-    null
-  }
-}
-
-private fun isRolloutFileName(fileName: String): Boolean {
-  return fileName.startsWith(ROLLOUT_FILE_PREFIX) && fileName.endsWith(ROLLOUT_FILE_SUFFIX)
-}
-
-private fun extractTitle(message: String?): String? {
-  val candidate = stripUserMessagePrefix(message ?: return null)
-    .lineSequence()
-    .map(String::trim)
-    .firstOrNull { it.isNotEmpty() }
-    ?: return null
-  if (isSessionPrefix(candidate)) return null
-  return trimTitle(candidate.replace(Regex("\\s+"), " "))
-}
-
-private fun stripUserMessagePrefix(text: String): String {
-  val markerIndex = text.indexOf(USER_MESSAGE_BEGIN)
-  return if (markerIndex >= 0) {
-    text.substring(markerIndex + USER_MESSAGE_BEGIN.length).trim()
-  }
-  else {
-    text.trim()
-  }
-}
-
-private fun isSessionPrefix(text: String): Boolean {
-  val normalized = text.trimStart().lowercase()
-  return normalized.startsWith(ENVIRONMENT_CONTEXT_OPEN_TAG) || normalized.startsWith(TURN_ABORTED_OPEN_TAG)
-}
-
-private fun trimTitle(value: String): String {
-  if (value.length <= MAX_TITLE_LENGTH) return value
-  return value.take(MAX_TITLE_LENGTH - 3).trimEnd() + "..."
-}
-
-private fun normalizeRootPath(value: String): String {
-  return value.replace('\\', '/').trimEnd('/')
-}
-
-private fun parseNestedStringField(parser: JsonParser, fieldName: String): String? {
-  if (parser.currentToken != JsonToken.START_OBJECT) {
-    parser.skipChildren()
+private fun changedProjectFilePathsForUpdate(
+  mayHaveChangedProjectFiles: Boolean,
+  changedProjectFilePaths: LinkedHashSet<String>?,
+): Set<String>? {
+  if (!mayHaveChangedProjectFiles) {
     return null
   }
-
-  var result: String? = null
-  forEachObjectField(parser) { nestedField ->
-    if (nestedField == fieldName) {
-      result = readStringOrNull(parser)
-    }
-    else {
-      parser.skipChildren()
-    }
-    true
-  }
-  return result
+  return changedProjectFilePaths?.takeIf { it.isNotEmpty() }
 }
 
-private fun maxTimestamp(current: Long, candidate: Long?): Long {
-  if (candidate == null) return current
-  return if (candidate > current) candidate else current
+private fun collectChangedProjectFilePaths(evidence: List<CodexProjectFileChangeEvidence>): Set<String>? {
+  val changedProjectFilePaths = LinkedHashSet<String>()
+  for ((_, itemChangedProjectFilePaths) in evidence) {
+    itemChangedProjectFilePaths ?: return null
+    changedProjectFilePaths.addAll(itemChangedProjectFilePaths)
+  }
+  return changedProjectFilePaths.takeIf { it.isNotEmpty() }
+}
+
+private data class ConsumedProjectFileChangeEvidence(
+  @JvmField val changedProjectFilePaths: Set<String>?,
+)
+
+private data class ActiveThreadActivityHint(
+  @JvmField val threadId: String,
+  @JvmField val title: String?,
+  @JvmField val activity: AgentThreadActivity,
+  @JvmField val summaryActivity: AgentThreadActivity?,
+  @JvmField val updatedAt: Long,
+)
+
+private fun ParsedRolloutThread.toActiveThreadActivityHint(): ActiveThreadActivityHint? {
+  if (parentThreadId != null) {
+    return null
+  }
+  val threadId = thread.thread.id
+  return ActiveThreadActivityHint(
+    threadId = threadId,
+    title = thread.thread.title.takeIf { hasExplicitTitle },
+    activity = thread.activity.toAgentThreadActivity(),
+    summaryActivity = thread.summaryActivity?.toAgentThreadActivity(),
+    updatedAt = thread.thread.updatedAt,
+  )
+}
+
+private fun isRolloutPath(path: Path): Boolean {
+  val fileName = path.fileName?.toString() ?: return false
+  return isRolloutFileName(fileName)
 }

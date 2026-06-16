@@ -1,4 +1,4 @@
-// Copyright 2000-2024 JetBrains s.r.o. and contributors. Use of this source code is governed by the Apache 2.0 license.
+// Copyright 2000-2026 JetBrains s.r.o. and contributors. Use of this source code is governed by the Apache 2.0 license.
 package com.intellij.terminal.tests.runner
 
 import com.intellij.execution.Platform
@@ -9,13 +9,16 @@ import com.intellij.openapi.util.registry.Registry
 import com.intellij.openapi.vfs.impl.wsl.WslConstants
 import com.intellij.testFramework.fixtures.BasePlatformTestCase
 import com.intellij.testFramework.utils.io.deleteRecursively
+import com.intellij.util.EnvironmentUtil
 import com.intellij.util.containers.CollectionFactory
+import com.intellij.util.system.LowLevelLocalMachineAccess
 import com.intellij.util.system.OS
 import org.assertj.core.api.Assertions.assertThat
 import org.jetbrains.plugins.terminal.ShellStartupOptions
 import org.jetbrains.plugins.terminal.TerminalProjectOptionsProvider
 import org.jetbrains.plugins.terminal.runner.LocalOptionsConfigurer
 import org.jetbrains.plugins.terminal.runner.LocalTerminalStartCommandBuilder.convertShellPathToCommand
+import org.jetbrains.plugins.terminal.startup.TerminalProcessType
 import org.jetbrains.plugins.terminal.util.TerminalEnvironment
 import org.jetbrains.plugins.terminal.util.TerminalEnvironment.TERMINAL_EMULATOR
 import org.jetbrains.plugins.terminal.util.TerminalEnvironment.TERM_SESSION_ID
@@ -26,6 +29,7 @@ import kotlin.io.path.pathString
 import kotlin.reflect.KMutableProperty0
 
 @TestFor(classes = [LocalOptionsConfigurer::class])
+@OptIn(LowLevelLocalMachineAccess::class)
 internal class LocalOptionsConfigurerTest : BasePlatformTestCase() {
   private lateinit var tempDirectory: Path
 
@@ -37,6 +41,7 @@ internal class LocalOptionsConfigurerTest : BasePlatformTestCase() {
   }
 
   override fun tearDown() {
+    @Suppress("SSBasedInspection")
     try {
       tempDirectory.deleteRecursively()
     }
@@ -64,7 +69,7 @@ internal class LocalOptionsConfigurerTest : BasePlatformTestCase() {
     assertEquals(listOf("/bin/zsh"), actual.shellCommand)
     assertEquals(tempDirectory.pathString, actual.workingDirectory)
     assertEquals("JetBrains-JediTerm", actual.envVariables["TERMINAL_EMULATOR"])
-    assertTrue(actual.envVariables["TERM_SESSION_ID"].let { it != null && it.isNotBlank() })
+    assertTrue(actual.envVariables["TERM_SESSION_ID"].let { !it.isNullOrBlank() })
     assertEquals("MY_CUSTOM_ENV_VALUE1", actual.envVariables["MY_CUSTOM_ENV1"])
   }
 
@@ -84,7 +89,7 @@ internal class LocalOptionsConfigurerTest : BasePlatformTestCase() {
     assertEquals(listOf("/bin/bash"), actual.shellCommand)
     assertEquals(tempDirectory.pathString, actual.workingDirectory)
     assertEquals("JetBrains-JediTerm", actual.envVariables["TERMINAL_EMULATOR"])
-    assertTrue(actual.envVariables["TERM_SESSION_ID"].let { it != null && it.isNotBlank() })
+    assertTrue(actual.envVariables["TERM_SESSION_ID"].let { !it.isNullOrBlank() })
     assertEquals("MY_CUSTOM_ENV_VALUE1", actual.envVariables["MY_CUSTOM_ENV1"])
   }
 
@@ -104,8 +109,100 @@ internal class LocalOptionsConfigurerTest : BasePlatformTestCase() {
     assertEquals(convertShellPathToCommand("/bin/bash"), actual.shellCommand)
     assertEquals(tempDirectory.pathString, actual.workingDirectory)
     assertEquals("JetBrains-JediTerm", actual.envVariables["TERMINAL_EMULATOR"])
-    assertTrue(actual.envVariables["TERM_SESSION_ID"].let { it != null && it.isNotBlank() })
+    assertTrue(actual.envVariables["TERM_SESSION_ID"].let { !it.isNullOrBlank() })
     assertEquals("MY_CUSTOM_ENV_VALUE1", actual.envVariables["MY_CUSTOM_ENV1"])
+  }
+
+  fun testShellTerminalProcessTypeUsesSystemEnvironment() {
+    setDefaultStartingDirectory(tempDirectory.pathString)
+
+    val probeName = "TERMINAL_MINIMAL_ENV_PROBE_${System.nanoTime()}"
+    assertThat(System.getenv()).doesNotContainKey(probeName)
+    setEnvironmentMapForTest(EnvironmentUtil.getEnvironmentMap() + (probeName to "DEFAULT_ENV_VALUE"))
+
+    val actual = LocalOptionsConfigurer.configureStartupOptions(
+      ShellStartupOptions.Builder()
+        .shellCommand(listOf("some-shell"))
+        .processType(TerminalProcessType.SHELL)
+        .build(),
+      project
+    )
+
+    assertThat(actual.envVariables).doesNotContainKey(probeName)
+  }
+
+  fun testNonShellTerminalProcessTypeUsesEnvironmentMap() {
+    setDefaultStartingDirectory(tempDirectory.pathString)
+
+    val probeName = "TERMINAL_DEFAULT_ENV_PROBE_${System.nanoTime()}"
+    val probeValue = "DEFAULT_ENV_VALUE"
+    assertThat(System.getenv()).doesNotContainKey(probeName)
+    setEnvironmentMapForTest(EnvironmentUtil.getEnvironmentMap() + (probeName to probeValue))
+
+    val actual = LocalOptionsConfigurer.configureStartupOptions(
+      ShellStartupOptions.Builder()
+        .shellCommand(listOf("non-shell"))
+        .processType(TerminalProcessType.NON_SHELL)
+        .build(),
+      project
+    )
+
+    assertEquals(probeValue, actual.envVariables[probeName])
+  }
+
+  fun testEnvVariableIsAddedToResultingEnv() {
+    setDefaultStartingDirectory(tempDirectory.pathString)
+
+    val actual = LocalOptionsConfigurer.configureStartupOptions(
+      ShellStartupOptions.Builder()
+        .shellCommand(listOf("some-shell"))
+        .envVariables(mapOf("MY_TEST_VAR" to "my_value"))
+        .build(),
+      project
+    )
+
+    assertThat(actual.envVariables).containsEntry("MY_TEST_VAR", "my_value")
+  }
+
+  fun testEnvVariableOverridesBaseEnvironment() {
+    setDefaultStartingDirectory(tempDirectory.pathString)
+
+    val probeName = "TERMINAL_ENV_OVERRIDE_PROBE_${System.nanoTime()}"
+    assertThat(System.getenv()).doesNotContainKey(probeName)
+    setEnvironmentMapForTest(EnvironmentUtil.getEnvironmentMap() + (probeName to "BASE_VALUE"))
+
+    val actual = LocalOptionsConfigurer.configureStartupOptions(
+      ShellStartupOptions.Builder()
+        .shellCommand(listOf("non-shell"))
+        .processType(TerminalProcessType.NON_SHELL)
+        .envVariables(mapOf(probeName to "OVERRIDE_VALUE"))
+        .build(),
+      project
+    )
+
+    assertThat(actual.envVariables).containsEntry(probeName, "OVERRIDE_VALUE")
+  }
+
+  fun testPlatformEnvVariablesCannotBeOverridden() {
+    setDefaultStartingDirectory(tempDirectory.pathString)
+
+    val actual = LocalOptionsConfigurer.configureStartupOptions(
+      ShellStartupOptions.Builder()
+        .shellCommand(listOf("some-shell"))
+        .envVariables(mapOf(
+          TERMINAL_EMULATOR to "custom-emulator",
+          TERM_SESSION_ID to "custom-session-id",
+          "TERM" to "custom-term",
+        ))
+        .build(),
+      project
+    )
+
+    assertThat(actual.envVariables[TERMINAL_EMULATOR]).isNotEqualTo("custom-emulator")
+    assertThat(actual.envVariables[TERM_SESSION_ID]).isNotEqualTo("custom-session-id")
+    if (OS.CURRENT != OS.Windows) {
+      assertThat(actual.envVariables["TERM"]).isNotEqualTo("custom-term")
+    }
   }
 
   fun testWslEnvSetup() {
@@ -261,6 +358,14 @@ internal class LocalOptionsConfigurerTest : BasePlatformTestCase() {
     prop.set(newValue)
     Disposer.register(testRootDisposable) {
       prop.set(prevValue)
+    }
+  }
+
+  private fun setEnvironmentMapForTest(environmentMap: Map<String, String>) {
+    val previous = EnvironmentUtil.getEnvironmentMap()
+    EnvironmentUtil.setEnvironmentLoader { environmentMap }
+    Disposer.register(testRootDisposable) {
+      EnvironmentUtil.setEnvironmentLoader { previous }
     }
   }
 }

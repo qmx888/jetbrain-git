@@ -1,9 +1,6 @@
 // Copyright 2000-2025 JetBrains s.r.o. and contributors. Use of this source code is governed by the Apache 2.0 license.
-@file:OptIn(IntellijInternalApi::class)
-
 package com.intellij.polySymbols.utils
 
-import com.intellij.openapi.util.IntellijInternalApi
 import com.intellij.openapi.util.RecursionManager
 import com.intellij.polySymbols.PolySymbol
 import com.intellij.polySymbols.PolySymbolKind
@@ -94,9 +91,6 @@ abstract class PolySymbolIsolatedMappingScope<T : PsiElement>(
     }
     return result
   }
-
-  final override fun getModificationCount(): Long =
-    PsiModificationTracker.getInstance(location.project).modificationCount
 
   final override fun equals(other: Any?): Boolean =
     other === this

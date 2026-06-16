@@ -2,9 +2,10 @@
 package com.intellij.python.community.execService.impl.processLaunchers
 
 import com.intellij.openapi.diagnostic.fileLogger
-import com.intellij.platform.eel.provider.utils.ProcessFunctions
+import com.intellij.platform.eel.impl.base.ProcessFunctions
 import com.intellij.python.community.execService.Args
 import com.intellij.python.community.execService.ConcurrentProcessWeight
+import com.intellij.python.community.execService.DownloadConfig
 import com.intellij.python.community.execService.TtySize
 import com.intellij.python.community.execService.impl.LoggingProcess
 import com.jetbrains.python.Result
@@ -38,7 +39,7 @@ internal class ProcessLauncher(
       }
 
   suspend fun killAndJoin() {
-    processCommands.processFunctions.killAndJoin(logger, exeForError.toString())
+    processCommands.processFunctions.killAndJoin({ logger.warn(it) }, exeForError.toString())
   }
 }
 
@@ -60,4 +61,5 @@ internal data class LaunchRequest(
   val args: Args,
   val env: Map<String, String>,
   val usePty: TtySize?,
+  val downloadConfig: DownloadConfig? = null,
 )

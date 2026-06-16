@@ -9592,7 +9592,7 @@
     {
       "name": "screen.forwarding.common.settings",
       "scope": "app",
-      "pluginId": "com.jetbrains.codeWithMe",
+      "pluginId": "com.jetbrains.remoteDevelopment",
       "classFqn": "com.jetbrains.rd.platform.codeWithMe.screenForwarding.ScreenForwardingCommonSettings",
       "storage": "screenForwardingSettings.xml",
       "properties": [
@@ -9606,7 +9606,7 @@
     {
       "name": "screen.forwarding.settings",
       "scope": "app",
-      "pluginId": "com.jetbrains.codeWithMe",
+      "pluginId": "com.jetbrains.remoteDevelopment",
       "classFqn": "com.jetbrains.rdserver.screenForwarding.ScreenForwardingHostSettings",
       "storage": "screenForwarding.xml",
       "properties": [
@@ -10753,35 +10753,6 @@
           "name": "nextCountedGradleBuild",
           "type": "Unsupported",
           "javaType": "long"
-        },
-        {
-          "name": "userSawSurvey",
-          "type": "Boolean",
-          "javaType": "boolean"
-        }
-      ]
-    },
-    {
-      "name": "K2NewUserTracker",
-      "scope": "app",
-      "pluginId": "org.jetbrains.kotlin",
-      "classFqn": "org.jetbrains.kotlin.onboarding.k2.satisfaction.survey.K2UserTracker",
-      "storage": "k2-feedback.xml",
-      "properties": [
-        {
-          "name": "k2UserSince",
-          "type": "Unsupported",
-          "javaType": "long"
-        },
-        {
-          "name": "lastSavedPluginMode",
-          "type": "String",
-          "javaType": "java.lang.String"
-        },
-        {
-          "name": "userSawEnableK2Notification",
-          "type": "Boolean",
-          "javaType": "boolean"
         },
         {
           "name": "userSawSurvey",

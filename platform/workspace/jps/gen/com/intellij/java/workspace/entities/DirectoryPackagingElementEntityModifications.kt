@@ -3,7 +3,12 @@
 
 package com.intellij.java.workspace.entities
 
-import com.intellij.platform.workspace.storage.*
+import com.intellij.java.workspace.entities.impl.DirectoryPackagingElementEntityImpl
+import com.intellij.platform.workspace.storage.EntitySource
+import com.intellij.platform.workspace.storage.EntityType
+import com.intellij.platform.workspace.storage.GeneratedCodeApiVersion
+import com.intellij.platform.workspace.storage.MutableEntityStorage
+import com.intellij.platform.workspace.storage.WorkspaceEntityBuilder
 
 @GeneratedCodeApiVersion(3)
 interface DirectoryPackagingElementEntityBuilder : WorkspaceEntityBuilder<DirectoryPackagingElementEntity>,
@@ -18,6 +23,7 @@ interface DirectoryPackagingElementEntityBuilder : WorkspaceEntityBuilder<Direct
 internal object DirectoryPackagingElementEntityType :
   EntityType<DirectoryPackagingElementEntity, DirectoryPackagingElementEntityBuilder>() {
   override val entityClass: Class<DirectoryPackagingElementEntity> get() = DirectoryPackagingElementEntity::class.java
+  override val entityImplBuilderClass: Class<*> get() = DirectoryPackagingElementEntityImpl.Builder::class.java
   operator fun invoke(
     directoryName: String,
     entitySource: EntitySource,

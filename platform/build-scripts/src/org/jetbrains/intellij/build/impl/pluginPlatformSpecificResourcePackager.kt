@@ -1,6 +1,7 @@
 // Copyright 2000-2025 JetBrains s.r.o. and contributors. Use of this source code is governed by the Apache 2.0 license.
 package org.jetbrains.intellij.build.impl
 
+import kotlinx.collections.immutable.PersistentList
 import org.jetbrains.intellij.build.BuildContext
 import org.jetbrains.intellij.build.CustomAssetShimSource
 import org.jetbrains.intellij.build.FileSource
@@ -15,37 +16,58 @@ import org.jetbrains.intellij.build.telemetry.use
 import java.nio.file.Path
 import kotlin.io.path.invariantSeparatorsPathString
 
+/**
+ * @param pluginDirs List of OS-specific plugin directories, with appended `plugin.directoryName` already
+ */
 internal suspend fun buildPlatformSpecificPluginResources(
   plugin: PluginLayout,
-  targetDirs: List<Pair<SupportedDistribution, Path>>,
+  pluginDirs: List<Pair<SupportedDistribution, Path>>,
   context: BuildContext,
+  isDevMode: Boolean,
 ): List<DistributionFileEntry> {
-  for ((dist, generators) in plugin.platformResourceGenerators) {
-    val targetDir = targetDirs.firstOrNull { it.first == dist }?.second ?: continue
-    val pluginDir = targetDir.resolve(plugin.directoryName)
-    val relativePluginDir = context.paths.buildOutputDir.relativize(pluginDir).toString()
-    for (generator in generators) {
-      spanBuilder("plugin platform-specific resources")
-        .setAttribute("path", relativePluginDir)
-        .setAttribute("os", dist.os.toString())
-        .setAttribute("arch", dist.arch.toString())
-        .use {
-          generator(pluginDir, context)
-        }
+  if (!isDevMode) {
+    // Keeping old behavior: `platformResourceGenerators` were not called in dev-mode
+    for ((dist, generators) in plugin.platformResourceGenerators) {
+      handlePlatformResourceGenerator(dist, generators, pluginDirs, context)
     }
   }
 
+  for ((dist, generators) in plugin.platformResourceGeneratorsBundledAndDevMode) {
+    handlePlatformResourceGenerator(dist, generators, pluginDirs, context)
+  }
+
   val distEntries = ArrayList<DistributionFileEntry>()
-  for ((platform, targetDir) in targetDirs) {
-    distEntries.addAll(handleCustomPlatformSpecificAssets(
-      layout = plugin,
-      targetPlatform = platform,
-      context = context,
-      pluginDir = targetDir.resolve(plugin.directoryName),
-      isDevMode = false,
-    ))
+  for ((platform, pluginDir) in pluginDirs) {
+    distEntries.addAll(
+      handleCustomPlatformSpecificAssets(
+        layout = plugin,
+        targetPlatform = platform,
+        context = context,
+        pluginDir = pluginDir,
+        isDevMode = isDevMode,
+      )
+    )
   }
   return distEntries
+}
+
+private suspend fun handlePlatformResourceGenerator(
+  dist: SupportedDistribution,
+  generators: PersistentList<ResourceGenerator>,
+  pluginDirs: List<Pair<SupportedDistribution, Path>>,
+  context: BuildContext,
+) {
+  val pluginDir = pluginDirs.firstOrNull { it.first == dist }?.second ?: return
+  val relativePluginDir = context.paths.buildOutputDir.relativize(pluginDir).toString()
+  for (generator in generators) {
+    spanBuilder("plugin platform-specific resources")
+      .setAttribute("path", relativePluginDir)
+      .setAttribute("os", dist.os.toString())
+      .setAttribute("arch", dist.arch.toString())
+      .use {
+        generator(pluginDir, context)
+      }
+  }
 }
 
 internal suspend fun handleCustomPlatformSpecificAssets(
@@ -101,8 +123,15 @@ internal suspend fun handleCustomPlatformSpecificAssets(
           }
 
           is FileSource -> {
-            copyFile(source.file, rootDir.resolve(source.relativePath))
-            distEntries.add(CustomAssetEntry(path = source.file, hash = lazySource.precomputedHash, relativeOutputFile = customAsset.relativePath))
+            val targetFile = rootDir.resolve(source.relativePath)
+            copyFile(source.file, targetFile)
+            distEntries.add(
+              CustomAssetEntry(
+                path = targetFile,
+                hash = lazySource.precomputedHash,
+                relativeOutputFile = resolveRelativeOutputFile(customAsset.relativePath, source.relativePath),
+              )
+            )
           }
 
           else -> throw UnsupportedOperationException("Not supported source for custom plugin platform-specific assets, got $source for $customAsset")
@@ -111,4 +140,8 @@ internal suspend fun handleCustomPlatformSpecificAssets(
     }
   }
   return distEntries
+}
+
+private fun resolveRelativeOutputFile(rootRelativePath: String?, sourceRelativePath: String): String {
+  return rootRelativePath?.let { "$it/$sourceRelativePath" } ?: sourceRelativePath
 }

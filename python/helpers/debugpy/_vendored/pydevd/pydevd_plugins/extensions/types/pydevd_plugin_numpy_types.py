@@ -119,7 +119,7 @@ class NDArrayTypeResolveProvider(object):
                 # container is just a variable for display, it cannot be accessed
                 return ""
             else:
-                return key
+                return ".%s" % key
 
         lst = [(key, value, evaluate_name(key)) for (key, value) in lst]
         return lst
@@ -131,6 +131,11 @@ class NDArrayStrProvider(StrPresentationProvider):
 
     def _to_str_no_trim(self, val):
         return str(val.tolist()).replace('\n', ',').strip()
+
+    def get_str_in_context(self, val, context):
+        if context in ("repl", "clipboard"):
+            return self.get_str(val, do_trim=False)
+        return self.get_str(val)
 
     def get_str(self, val, do_trim=True):
         if do_trim:

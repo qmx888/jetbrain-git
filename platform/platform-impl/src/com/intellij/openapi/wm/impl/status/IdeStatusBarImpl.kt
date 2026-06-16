@@ -5,6 +5,7 @@ import com.intellij.accessibility.AccessibilityUtils
 import com.intellij.codeWithMe.ClientId
 import com.intellij.ide.HelpTooltipManager
 import com.intellij.ide.IdeEventQueue
+import com.intellij.ide.impl.ProjectUtil
 import com.intellij.internal.statistic.service.fus.collectors.UIEventLogger.StatusBarPopupShown
 import com.intellij.internal.statistic.service.fus.collectors.UIEventLogger.StatusBarWidgetClicked
 import com.intellij.openapi.Disposable
@@ -34,6 +35,7 @@ import com.intellij.openapi.progress.ProgressModel
 import com.intellij.openapi.progress.TaskInfo
 import com.intellij.openapi.progress.impl.BridgeTaskSupport
 import com.intellij.openapi.progress.impl.PerProjectTaskInfoEntityCollector
+import com.intellij.openapi.project.DumbAwareAction
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.ui.MessageType
 import com.intellij.openapi.ui.popup.BalloonHandler
@@ -46,6 +48,7 @@ import com.intellij.openapi.util.text.Strings
 import com.intellij.openapi.wm.CustomStatusBarWidget
 import com.intellij.openapi.wm.IconLikeCustomStatusBarWidget
 import com.intellij.openapi.wm.IconWidgetPresentation
+import com.intellij.openapi.wm.IdeFocusManager
 import com.intellij.openapi.wm.IdeFrame
 import com.intellij.openapi.wm.StatusBar
 import com.intellij.openapi.wm.StatusBarListener
@@ -55,6 +58,7 @@ import com.intellij.openapi.wm.StatusBarWidget.MultipleTextValuesPresentation
 import com.intellij.openapi.wm.StatusBarWidget.TextPresentation
 import com.intellij.openapi.wm.StatusBarWidgetFactory
 import com.intellij.openapi.wm.TextWidgetPresentation
+import com.intellij.openapi.wm.ToolWindowManager
 import com.intellij.openapi.wm.WidgetPresentation
 import com.intellij.openapi.wm.WidgetPresentationDataContext
 import com.intellij.openapi.wm.WidgetPresentationFactory
@@ -88,8 +92,11 @@ import com.intellij.ui.util.height
 import com.intellij.util.EventDispatcher
 import com.intellij.util.concurrency.annotations.RequiresEdt
 import com.intellij.util.ui.EdtInvocationManager
+import com.intellij.util.ui.JBInsets
 import com.intellij.util.ui.JBUI
 import com.intellij.util.ui.UIUtil
+import com.intellij.util.ui.accessibility.AccessibleContextDelegate
+import com.intellij.util.ui.table.ComponentsListFocusTraversalPolicy
 import kotlinx.coroutines.CoroutineName
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -115,6 +122,7 @@ import org.jetbrains.annotations.ApiStatus
 import org.jetbrains.annotations.ApiStatus.Internal
 import org.jetbrains.annotations.Nls
 import java.awt.AWTEvent
+import java.awt.AWTKeyStroke
 import java.awt.BorderLayout
 import java.awt.Color
 import java.awt.Component
@@ -123,27 +131,38 @@ import java.awt.Dimension
 import java.awt.Graphics
 import java.awt.GridBagConstraints
 import java.awt.GridBagLayout
+import java.awt.Insets
+import java.awt.KeyboardFocusManager
 import java.awt.LayoutManager
 import java.awt.Point
+import java.awt.event.ActionEvent
+import java.awt.event.FocusAdapter
+import java.awt.event.FocusEvent
+import java.awt.event.KeyEvent
 import java.awt.event.MouseEvent
+import java.lang.ref.WeakReference
 import java.util.function.Supplier
 import javax.accessibility.Accessible
 import javax.accessibility.AccessibleContext
 import javax.accessibility.AccessibleRole
+import javax.swing.AbstractAction
 import javax.swing.BoxLayout
 import javax.swing.Icon
 import javax.swing.JComponent
 import javax.swing.JLabel
 import javax.swing.JPanel
+import javax.swing.KeyStroke
 import javax.swing.SwingUtilities
 import javax.swing.ToolTipManager
 import javax.swing.UIManager
+import javax.swing.border.Border
 import javax.swing.border.CompoundBorder
 import javax.swing.event.HyperlinkListener
 import kotlin.math.max
 
 private const val UI_CLASS_ID = "IdeStatusBarUI"
 private val WIDGET_ID = Key.create<String>("STATUS_BAR_WIDGET_ID")
+private const val STATUS_BAR_WIDGET_ACTIVATE = "statusBarWidgetActivate"
 
 private val LOG = logger<IdeStatusBarImpl>()
 
@@ -191,7 +210,9 @@ open class IdeStatusBarImpl @Internal constructor(
   private val listeners = EventDispatcher.create(StatusBarListener::class.java)
 
   private val progressFlow = MutableSharedFlow<ProgressSetChangeEvent>(replay = 1, extraBufferCapacity = Int.MAX_VALUE)
+  private var restoreFocusTargetRef: WeakReference<Component>? = null
 
+  @Internal
   companion object {
     internal val HOVERED_WIDGET_ID: DataKey<String> = DataKey.create("HOVERED_WIDGET_ID")
 
@@ -229,7 +250,23 @@ open class IdeStatusBarImpl @Internal constructor(
     layout = BorderLayout()
     isOpaque = true
     border = (if (ExperimentalUI.isNewUI()) {
-      CompoundBorder(JBUI.Borders.customLine(JBUI.CurrentTheme.StatusBar.BORDER_COLOR, 1, 0, 0, 0), JBUI.Borders.empty(0, 10))
+      CompoundBorder(object : Border {
+        override fun paintBorder(component: Component, g: Graphics, x: Int, y: Int, width: Int, height: Int) {
+          val top = getTopWidth()
+          if (top > 0) {
+            g.color = JBUI.CurrentTheme.StatusBar.BORDER_COLOR
+            g.fillRect(x, y, width, JBUI.scale(top))
+          }
+        }
+
+        override fun getBorderInsets(component: Component): Insets {
+          return JBInsets(getTopWidth(), 0, 0, 0)
+        }
+
+        private fun getTopWidth(): Int = JBUI.getInt("StatusBar.topBorderWidth", 1)
+
+        override fun isBorderOpaque(): Boolean = true
+      }, JBUI.Borders.empty(0, 10))
     }
     else {
       JBUI.Borders.empty(1, 0, 0, 6)
@@ -274,6 +311,19 @@ open class IdeStatusBarImpl @Internal constructor(
         }
       }
     }, coroutineScope)
+
+    isFocusCycleRoot = true
+    isFocusTraversalPolicyProvider = true
+    focusTraversalPolicy = StatusBarFocusTraversalPolicy()
+    val kfm = KeyboardFocusManager.getCurrentKeyboardFocusManager()
+    setFocusTraversalKeys(KeyboardFocusManager.FORWARD_TRAVERSAL_KEYS,
+                          kfm.getDefaultFocusTraversalKeys(KeyboardFocusManager.FORWARD_TRAVERSAL_KEYS) +
+                          AWTKeyStroke.getAWTKeyStroke(KeyEvent.VK_RIGHT, 0))
+    setFocusTraversalKeys(KeyboardFocusManager.BACKWARD_TRAVERSAL_KEYS,
+                          kfm.getDefaultFocusTraversalKeys(KeyboardFocusManager.BACKWARD_TRAVERSAL_KEYS) +
+                          AWTKeyStroke.getAWTKeyStroke(KeyEvent.VK_LEFT, 0))
+    DumbAwareAction.create { restoreFocusToPreviousComponent() }
+      .registerCustomShortcutSet(KeyEvent.VK_ESCAPE, 0, this)
   }
 
   internal fun initialize() {
@@ -470,6 +520,7 @@ open class IdeStatusBarImpl @Internal constructor(
     LOG.debug { "addWidgetToSelf: ${bean.widget.ID()}" }
 
     widgetRegistry.put(bean.widget.ID(), bean)
+    registerFocusableWidget(bean.widget, bean.component)
 
     val effectiveDisposable = parentDisposable ?: disposable
     Disposer.register(effectiveDisposable, bean.widget)
@@ -481,6 +532,58 @@ open class IdeStatusBarImpl @Internal constructor(
     }
     panel.add(bean.component)
     panel.revalidate()
+  }
+
+  private fun registerFocusableWidget(widget: StatusBarWidget, component: JComponent) {
+    val activationTarget = if (widget is CustomStatusBarWidget) {
+      val widgetComponent = widget.component
+      if (widgetComponent === component || SwingUtilities.isDescendingFrom(widgetComponent, component))
+        widgetComponent else component
+    }
+    else {
+      component
+    }
+    registerFocusableWidget(component, activationTarget = activationTarget)
+  }
+
+  internal fun registerFocusableWidget(component: JComponent, activationTarget: JComponent = component, onActivate: (() -> Unit)? = null) {
+    component.isFocusable = true
+    component.isRequestFocusEnabled = false
+    component.addFocusListener(object : FocusAdapter() {
+      override fun focusGained(e: FocusEvent) = effectRenderer.repaintFocusBorder(component)
+      override fun focusLost(e: FocusEvent) = effectRenderer.repaintFocusBorder(component)
+    })
+
+    val activate = object : AbstractAction() {
+      override fun actionPerformed(e: ActionEvent) {
+        if (component.isShowing && component.isEnabled) {
+          StatusBarUtil.performPrimaryAction(component, activationTarget, onActivate?.let { Runnable {
+            it() } })
+        }
+      }
+    }
+    val inputMap = component.getInputMap(WHEN_FOCUSED)
+    inputMap.put(KeyStroke.getKeyStroke(KeyEvent.VK_SPACE, 0), STATUS_BAR_WIDGET_ACTIVATE)
+    inputMap.put(KeyStroke.getKeyStroke(KeyEvent.VK_ENTER, 0), STATUS_BAR_WIDGET_ACTIVATE)
+    component.actionMap.put(STATUS_BAR_WIDGET_ACTIVATE, activate)
+  }
+
+  private fun restoreFocusToPreviousComponent() {
+    val project = ProjectUtil.getProjectForComponent(this) ?: return
+    val savedFocus = restoreFocusTargetRef?.get()
+    restoreFocusTargetRef = null
+    if (savedFocus != null && savedFocus.isShowing && savedFocus.isEnabled) {
+      IdeFocusManager.getGlobalInstance().requestFocusInProject(savedFocus, project)
+      return
+    }
+
+    val toolWindowManager = ToolWindowManager.getInstance(project)
+    toolWindowManager.activateEditorComponent()
+    SwingUtilities.invokeLater {
+      if (!toolWindowManager.isEditorComponentActive) {
+        KeyboardFocusManager.getCurrentKeyboardFocusManager().clearGlobalFocusOwner()
+      }
+    }
   }
 
   //=== PUBLIC API: Add widget + propagate to all children ===
@@ -619,6 +722,7 @@ open class IdeStatusBarImpl @Internal constructor(
   override fun paintChildren(g: Graphics) {
     effectRenderer.paintBackground(g)
     super.paintChildren(g)
+    effectRenderer.paintFocusBorder(g)
   }
 
   private fun dispatchMouseEvent(e: MouseEvent): Boolean {
@@ -754,6 +858,52 @@ open class IdeStatusBarImpl @Internal constructor(
   @Internal
   fun getWidgetComponent(id: String): JComponent? = widgetRegistry.getComponent(id)
 
+  internal fun focusFirstWidget() {
+    if (currentFocusOwner()?.isSameOrDescendingFrom(this) == true) {
+      return
+    }
+
+    val component = getFocusableAndEnabledWidgets().firstOrNull() ?: return
+    val focusOwner = currentFocusOwner()
+    restoreFocusTargetRef = if (focusOwner == null) null else WeakReference(focusOwner)
+    IdeFocusManager.getGlobalInstance().requestFocusInProject(component, project)
+  }
+
+  internal fun getFocusableWidgetComponents(): List<JComponent> {
+    return buildList {
+      leftPanel?.components?.let { addAll(it) }
+      infoAndProgressPanel?.focusableComponents?.let { addAll(it) }
+      addAll(rightPanel.components.sortedBy { rightPanelLayout.getConstraints(it).gridx })
+    }.filterIsInstance<JComponent>()
+  }
+
+  internal fun focusNextWidgetAfter(component: JComponent) {
+    val focusOwner = currentFocusOwner()
+    if (focusOwner !== component && !(focusOwner != null && SwingUtilities.isDescendingFrom(focusOwner, component))) return
+
+    val widgets = getFocusableAndEnabledWidgets()
+    val currentIndex = widgets.indexOfFirst { it === component }
+    if (currentIndex == -1) {
+      return
+    }
+
+    for (i in currentIndex + 1 until widgets.size) {
+      val target = widgets[i]
+      if (!target.isSameOrDescendingFrom(component)) {
+        IdeFocusManager.getGlobalInstance().requestFocusInProject(target, project)
+        return
+      }
+    }
+  }
+
+  private fun getFocusableAndEnabledWidgets(): List<JComponent> =
+    getFocusableWidgetComponents().filter { it.isShowing && it.isEnabled }
+
+  private fun Component.isSameOrDescendingFrom(parent: Component): Boolean =
+    this === parent || SwingUtilities.isDescendingFrom(this, parent)
+
+  private fun currentFocusOwner(): Component? = KeyboardFocusManager.getCurrentKeyboardFocusManager().focusOwner
+
   override val project: Project?
     get() = getProject()
 
@@ -797,6 +947,18 @@ open class IdeStatusBarImpl @Internal constructor(
     listeners.multicaster.widgetRemoved(id)
   }
 
+  private inner class StatusBarFocusTraversalPolicy : ComponentsListFocusTraversalPolicy(true) {
+    override fun getOrderedComponents(): List<Component> = getFocusableAndEnabledWidgets()
+
+    override fun getComponentAfter(aContainer: Container, aComponent: Component): Component? =
+      super.getComponentAfter(aContainer, aComponent) ?: getFirstComponent(aContainer)
+
+    override fun getComponentBefore(aContainer: Container, aComponent: Component): Component? =
+      super.getComponentBefore(aContainer, aComponent) ?: getLastComponent(aContainer)
+
+    override fun getDefaultComponent(aContainer: Container): Component? = null
+  }
+
   private fun registerCloneTasks() {
     CloneableProjectsService.getInstance()
       .collectCloneableProjects()
@@ -810,9 +972,11 @@ open class IdeStatusBarImpl @Internal constructor(
       })
   }
 
-  @Suppress("RedundantInnerClassModifier")
+  @Internal
   protected inner class AccessibleIdeStatusBarImpl : AccessibleJComponent() {
     override fun getAccessibleRole(): AccessibleRole = AccessibilityUtils.GROUPED_ELEMENTS
+
+    override fun getAccessibleDescription(): String? = getInfo()
   }
 }
 
@@ -906,7 +1070,18 @@ private fun wrapCustomStatusBarWidget(widget: CustomStatusBarWidget): JComponent
 
   // wrap with a panel, so it will fill the entire status bar height
   val result = if (component is JLabel) {
-    val panel = JPanel(BorderLayout())
+    val panel = object : JPanel(BorderLayout()) {
+      override fun getAccessibleContext(): AccessibleContext {
+        if (accessibleContext == null) {
+          val defaultAccessibleContext = super.getAccessibleContext()
+          accessibleContext = object : AccessibleContextDelegate(component.accessibleContext) {
+            override fun getDelegateParent(): Container? = parent
+            override fun getAccessibleIndexInParent(): Int = defaultAccessibleContext.accessibleIndexInParent
+          }
+        }
+        return accessibleContext
+      }
+    }
     panel.add(component, BorderLayout.CENTER)
     panel.isOpaque = false
     panel

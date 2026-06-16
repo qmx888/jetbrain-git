@@ -3,7 +3,13 @@
 
 package com.intellij.platform.workspace.jps.entities
 
-import com.intellij.platform.workspace.storage.*
+import com.intellij.platform.workspace.jps.entities.impl.SourceRootEntityImpl
+import com.intellij.platform.workspace.storage.EntitySource
+import com.intellij.platform.workspace.storage.EntityType
+import com.intellij.platform.workspace.storage.GeneratedCodeApiVersion
+import com.intellij.platform.workspace.storage.MutableEntityStorage
+import com.intellij.platform.workspace.storage.WorkspaceEntity
+import com.intellij.platform.workspace.storage.WorkspaceEntityBuilder
 import com.intellij.platform.workspace.storage.url.VirtualFileUrl
 import org.jetbrains.annotations.ApiStatus.Internal
 
@@ -17,6 +23,7 @@ interface SourceRootEntityBuilder : WorkspaceEntityBuilder<SourceRootEntity> {
 
 internal object SourceRootEntityType : EntityType<SourceRootEntity, SourceRootEntityBuilder>() {
   override val entityClass: Class<SourceRootEntity> get() = SourceRootEntity::class.java
+  override val entityImplBuilderClass: Class<*> get() = SourceRootEntityImpl.Builder::class.java
   operator fun invoke(
     url: VirtualFileUrl,
     rootTypeId: SourceRootTypeId,

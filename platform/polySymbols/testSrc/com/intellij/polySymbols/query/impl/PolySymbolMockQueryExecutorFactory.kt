@@ -21,13 +21,17 @@ class PolySymbolMockQueryExecutorFactory : PolySymbolQueryExecutorFactory {
   override fun create(location: PsiElement?, allowResolve: Boolean): PolySymbolQueryExecutor {
     val polyContext = PolyContext.create(context)
     return PolySymbolQueryExecutorImpl(location, scopeList,
+                                       emptyMap(),
                                        PolySymbolNamesProviderImpl(
                                          polyContext,
                                          scopeList.filterIsInstance<WebTypesMockScopeImpl>().mapNotNull {
                                            it.getNameConversionRulesProvider(polyContext)?.getNameConversionRules()
                                          },
                                          createModificationTracker(
-                                           scopeList.filterIsInstance<WebTypesMockScopeImpl>().map { it.createPointer() })),
+                                           scopeList.filterIsInstance<WebTypesMockScopeImpl>().map { scope ->
+                                             val scopePtr = scope.createPointer()
+                                             com.intellij.model.Pointer { scopePtr.dereference()?.modificationTracker }
+                                           })),
                                        PolySymbolQueryResultsCustomizerFactory.getQueryResultsCustomizer(location,
                                                                                                          PolyContext.create(context)),
                                        PolyContext.create(context),

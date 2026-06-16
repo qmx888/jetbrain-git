@@ -15,13 +15,12 @@ import com.jetbrains.python.sdk.add.v2.PathHolder
 import com.jetbrains.python.sdk.add.v2.PythonAddInterpreterModel
 import com.jetbrains.python.sdk.add.v2.PythonMutableTargetAddInterpreterModel
 import com.jetbrains.python.sdk.add.v2.SdkWrapper
-import com.jetbrains.python.sdk.add.v2.existingSdks
 import com.jetbrains.python.sdk.add.v2.installBaseSdk
 import com.jetbrains.python.sdk.add.v2.setupSdk
 
 suspend fun <P : PathHolder> PythonMutableTargetAddInterpreterModel<P>.setupVirtualenv(venvFolder: P, moduleOrProject: ModuleOrProject): PyResult<Sdk> {
   val baseSdkPath = when (val baseSdk = state.baseInterpreter.get()!!) {
-    is InstallableSelectableInterpreter -> installBaseSdk(baseSdk.sdk, this.existingSdks)?.let { fileSystem.wrapSdk(it) }?.homePath
+    is InstallableSelectableInterpreter -> installBaseSdk(baseSdk.installableSdk)?.let { fileSystem.wrapSdk(it) }?.homePath
     is ExistingSelectableInterpreter -> baseSdk.homePath
     is DetectedSelectableInterpreter, is ManuallyAddedSelectableInterpreter -> baseSdk.homePath
   }!!
@@ -34,7 +33,6 @@ suspend fun <P : PathHolder> PythonMutableTargetAddInterpreterModel<P>.setupVirt
     moduleOrProject = moduleOrProject,
     pathToBasePython = baseSdkPath,
     pathToVenvHome = venvFolder,
-    existingSdks = existingSdks
   ).getOr { return it }
 
   return PyResult.success(newSdk.sdk)
@@ -44,7 +42,6 @@ private suspend fun <P : PathHolder> PythonAddInterpreterModel<P>.createSdkFromB
   moduleOrProject: ModuleOrProject,
   pathToBasePython: P,
   pathToVenvHome: P,
-  existingSdks: List<Sdk>,
 ): PyResult<SdkWrapper<P>> {
   val basePython = fileSystem.getBinaryToExec(pathToBasePython)
   val inheritSitePackages = venvViewModel.inheritSitePackages.get()
@@ -57,7 +54,6 @@ private suspend fun <P : PathHolder> PythonAddInterpreterModel<P>.createSdkFromB
 
   val sdkResult = detectedSelectableInterpreter.setupSdk(
     moduleOrProject = moduleOrProject,
-    allSdks = existingSdks,
     fileSystem = fileSystem,
     targetPanelExtension = state.targetPanelExtension.get(),
     isAssociateWithModule = !venvViewModel.makeAvailableForAllProjects.get()

@@ -47,7 +47,16 @@ fun installAndEnablePlugins(
 fun installAndEnable(
   pluginIds: Set<PluginId>,
   onSuccess: Runnable,
-): Unit = installAndEnable(null, pluginIds, true, false, null, onSuccess)
+) {
+  installAndEnable(
+    project = null,
+    pluginIds = pluginIds,
+    showDialog = true,
+    selectAlInDialog = false,
+    modalityState = null,
+    onSuccess = onSuccess,
+  )
+}
 
 @JvmOverloads
 fun installAndEnable(
@@ -58,7 +67,14 @@ fun installAndEnable(
   modalityState: ModalityState? = null,
   onSuccess: Runnable,
 ) {
-  getInstallAndEnableTask(project, pluginIds, showDialog, selectAlInDialog, modalityState, onSuccess).runBlocking()
+  getInstallAndEnableTask(
+    project = project,
+    pluginIds = pluginIds,
+    showDialog = showDialog,
+    selectAlInDialog = selectAlInDialog,
+    modalityState = modalityState,
+    onSuccess = onSuccess,
+  ).runBlocking()
 }
 
 @JvmOverloads

@@ -9,6 +9,7 @@ import com.intellij.openapi.application.ReadAction
 import com.intellij.openapi.editor.asTextRange
 import com.intellij.openapi.editor.colors.EditorColors
 import com.intellij.openapi.project.DumbService
+import com.intellij.openapi.util.registry.Registry
 import com.intellij.psi.PsiElement
 import com.intellij.testFramework.ExpectedHighlightingData
 import com.intellij.util.concurrency.AppExecutorUtil
@@ -24,56 +25,72 @@ abstract class AbstractCustomHighlightUsageHandlerTest : KotlinLightCodeInsightF
         const val CARET_TAG = "~"
     }
 
+    override fun setUp() {
+        super.setUp()
+        Registry.get("kotlin.highlight.stdlib.dsl.exit.points").setValue(true)
+    }
+
+    override fun tearDown() {
+        try {
+            Registry.get("kotlin.highlight.stdlib.dsl.exit.points").resetToDefault()
+        } catch (e: Throwable) {
+            addSuppressedException(e)
+        } finally {
+            super.tearDown()
+        }
+    }
+
     open fun doTest(unused: String) {
-        val disableDirective = IgnoreTests.DIRECTIVES.of(pluginMode)
+        val disableDirective = IgnoreTests.DIRECTIVES.IGNORE_K2
 
         IgnoreTests.runTestIfNotDisabledByFileDirective(
             dataFile().toPath(),
             disableDirective
         ) {
-        myFixture.configureByFile(fileName())
+            myFixture.configureByFile(fileName())
 
-        val editor = myFixture.editor
+            val editor = myFixture.editor
 
-        val document = myFixture.editor.document
-        val data = ExpectedHighlightingData(document, false, false, true, false)
-        data.init()
+            val document = myFixture.editor.document
+            val data = ExpectedHighlightingData(document, false, false, true, false)
+            data.init()
 
-        val caret = document.extractMarkerOffset(project, CARET_TAG)
-        assert(caret != -1) { "Caret marker '${CARET_TAG}' expected" }
-        editor.caretModel.moveToOffset(caret)
+            val caret = document.extractMarkerOffset(project, CARET_TAG)
+            assert(caret != -1) { "Caret marker '${CARET_TAG}' expected" }
+            editor.caretModel.moveToOffset(caret)
 
-        val customHandler =
-            HighlightUsagesHandler.createCustomHandler<PsiElement>(editor, myFixture.file)
+            val customHandler =
+                HighlightUsagesHandler.createCustomHandler<PsiElement>(editor, myFixture.file)
 
-        if (customHandler != null) {
-            ReadAction.nonBlocking(Callable {
-                customHandler.highlightUsages()
-            }).submit(AppExecutorUtil.getAppExecutorService())
-                .get()
-        } else {
-            DumbService.Companion.getInstance(project).withAlternativeResolveEnabled(Runnable {
-                highlightUsages(project, editor, file)
-            })
-        }
-
-        val ranges = editor.markupModel.allHighlighters
-            .filter { it.textAttributesKey == EditorColors.SEARCH_RESULT_ATTRIBUTES || it.textAttributesKey == EditorColors.WRITE_SEARCH_RESULT_ATTRIBUTES }
-            .mapNotNull { it.asTextRange }
-
-        val infos = ranges.toHashSet()
-            .map {
-                var startOffset = it.startOffset
-                var endOffset = it.endOffset
-
-                if (startOffset > caret) startOffset += CARET_TAG.length
-                if (endOffset > caret) endOffset += CARET_TAG.length
-
-                HighlightInfo.newHighlightInfo(HighlightInfoType.INFORMATION)
-                    .range(startOffset, endOffset)
-                    .create()
+            if (customHandler != null) {
+                ReadAction.nonBlocking(Callable {
+                    customHandler.highlightUsages()
+                }).submit(AppExecutorUtil.getAppExecutorService())
+                    .get()
+            } else {
+                DumbService.Companion.getInstance(project).withAlternativeResolveEnabled(Runnable {
+                    highlightUsages(project, editor, file)
+                })
             }
 
-        data.checkResult(myFixture.file, infos, StringBuilder(document.text).insert(caret, CARET_TAG).toString())
-    }}
+            val ranges = editor.markupModel.allHighlighters
+                .filter { it.textAttributesKey == EditorColors.SEARCH_RESULT_ATTRIBUTES || it.textAttributesKey == EditorColors.WRITE_SEARCH_RESULT_ATTRIBUTES }
+                .mapNotNull { it.asTextRange }
+
+            val infos = ranges.toHashSet()
+                .map {
+                    var startOffset = it.startOffset
+                    var endOffset = it.endOffset
+
+                    if (startOffset > caret) startOffset += CARET_TAG.length
+                    if (endOffset > caret) endOffset += CARET_TAG.length
+
+                    HighlightInfo.newHighlightInfo(HighlightInfoType.INFORMATION)
+                        .range(startOffset, endOffset)
+                        .create()
+                }
+
+            data.checkResult(myFixture.file, infos, StringBuilder(document.text).insert(caret, CARET_TAG).toString())
+        }
+    }
 }

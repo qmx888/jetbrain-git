@@ -48,7 +48,6 @@ public interface ToolWindowId {
   String PREVIEW = "Preview";
   String SERVICES = "Services";
   String ENDPOINTS = "Endpoints";
-  String MEET_NEW_UI = "Meet New UI";
   String PULL_REQUESTS = "Pull Requests";
   String TERMINAL = "Terminal";
 
@@ -78,7 +77,6 @@ public interface ToolWindowId {
     DATABASE_VIEW,
     PREVIEW,
     SERVICES,
-    ENDPOINTS,
-    MEET_NEW_UI
+    ENDPOINTS
   );
 }

@@ -1,9 +1,8 @@
-// Copyright 2000-2025 JetBrains s.r.o. and contributors. Use of this source code is governed by the Apache 2.0 license.
+// Copyright 2000-2026 JetBrains s.r.o. and contributors. Use of this source code is governed by the Apache 2.0 license.
 
 package org.jetbrains.kotlin.idea.fir.copyPaste;
 
 import com.intellij.testFramework.TestDataPath;
-import org.jetbrains.kotlin.idea.base.plugin.KotlinPluginMode;
 import org.jetbrains.kotlin.idea.base.test.TestRoot;
 import org.jetbrains.kotlin.idea.test.JUnit3RunnerWithInners;
 import org.jetbrains.kotlin.idea.test.KotlinTestUtils;
@@ -20,12 +19,6 @@ import org.junit.runner.RunWith;
 @RunWith(JUnit3RunnerWithInners.class)
 @TestMetadata("../../idea/tests/testData/copyPaste/multiDollar")
 public class FirKotlinToKotlinMultiDollarStringsCopyPasteTestGenerated extends AbstractFirKotlinToKotlinMultiDollarStringsCopyPasteTest {
-    @java.lang.Override
-    @org.jetbrains.annotations.NotNull
-    public final KotlinPluginMode getPluginMode() {
-        return KotlinPluginMode.K2;
-    }
-
     private void runTest(String testDataFilePath) throws Exception {
         KotlinTestUtils.runTest(this::doTest, this, testDataFilePath);
     }
@@ -115,6 +108,16 @@ public class FirKotlinToKotlinMultiDollarStringsCopyPasteTestGenerated extends A
         runTest("../../idea/tests/testData/copyPaste/multiDollar/FromPrefixedToPrefixedLongTemplateEntry.kt");
     }
 
+    @TestMetadata("FromPrefixedToPrefixedLongTemplateEntryExactEntrySelection.kt")
+    public void testFromPrefixedToPrefixedLongTemplateEntryExactEntrySelection() throws Exception {
+        runTest("../../idea/tests/testData/copyPaste/multiDollar/FromPrefixedToPrefixedLongTemplateEntryExactEntrySelection.kt");
+    }
+
+    @TestMetadata("FromPrefixedToPrefixedLongTemplateEntryExactNestedEntrySelection.kt")
+    public void testFromPrefixedToPrefixedLongTemplateEntryExactNestedEntrySelection() throws Exception {
+        runTest("../../idea/tests/testData/copyPaste/multiDollar/FromPrefixedToPrefixedLongTemplateEntryExactNestedEntrySelection.kt");
+    }
+
     @TestMetadata("FromPrefixedToPrefixedPlainText.kt")
     public void testFromPrefixedToPrefixedPlainText() throws Exception {
         runTest("../../idea/tests/testData/copyPaste/multiDollar/FromPrefixedToPrefixedPlainText.kt");
@@ -123,6 +126,11 @@ public class FirKotlinToKotlinMultiDollarStringsCopyPasteTestGenerated extends A
     @TestMetadata("FromPrefixedToPrefixedShortNameEntry.kt")
     public void testFromPrefixedToPrefixedShortNameEntry() throws Exception {
         runTest("../../idea/tests/testData/copyPaste/multiDollar/FromPrefixedToPrefixedShortNameEntry.kt");
+    }
+
+    @TestMetadata("FromPrefixedToPrefixedShortNameEntryExactEntrySelection.kt")
+    public void testFromPrefixedToPrefixedShortNameEntryExactEntrySelection() throws Exception {
+        runTest("../../idea/tests/testData/copyPaste/multiDollar/FromPrefixedToPrefixedShortNameEntryExactEntrySelection.kt");
     }
 
     @TestMetadata("FromPrefixedToSimpleDangerousDollar.kt")

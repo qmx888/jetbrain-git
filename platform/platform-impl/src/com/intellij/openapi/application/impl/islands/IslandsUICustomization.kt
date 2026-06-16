@@ -51,9 +51,11 @@ import com.intellij.openapi.wm.impl.content.ContentLayout
 import com.intellij.openapi.wm.impl.customFrameDecorations.header.CustomWindowHeaderUtil
 import com.intellij.openapi.wm.impl.headertoolbar.MainToolbar
 import com.intellij.openapi.wm.impl.isInternal
-import com.intellij.toolWindow.InternalDecoratorImpl.Companion.preventRecursiveBackgroundUpdateOnToolwindow
+import com.intellij.openapi.wm.impl.status.IdeStatusBarImpl
+import com.intellij.toolWindow.InternalDecoratorImpl
 import com.intellij.toolWindow.ToolWindowButtonManager
 import com.intellij.toolWindow.ToolWindowPaneNewButtonManager
+import com.intellij.toolWindow.ToolWindowRightToolbar
 import com.intellij.toolWindow.xNext.island.XNextIslandHolder
 import com.intellij.ui.AbstractBorderPainter
 import com.intellij.ui.ClientProperty
@@ -61,14 +63,17 @@ import com.intellij.ui.DefaultBorderPainter
 import com.intellij.ui.EditorNotificationPanel
 import com.intellij.ui.ExperimentalUI
 import com.intellij.ui.Gray
+import com.intellij.ui.IslandsState
 import com.intellij.ui.JBColor
 import com.intellij.ui.SideBorder
 import com.intellij.ui.WindowRoundedCornersManager
 import com.intellij.ui.components.panels.Wrapper
 import com.intellij.ui.mac.WindowTabsComponent
 import com.intellij.ui.paint.LinePainter2D
+import com.intellij.ui.paint.PaintUtil
 import com.intellij.ui.paint.RectanglePainter2D
 import com.intellij.ui.scale.JBUIScale
+import com.intellij.ui.scale.ScaleContext
 import com.intellij.ui.tabs.JBTabPainter
 import com.intellij.ui.tabs.JBTabsPosition
 import com.intellij.ui.tabs.impl.JBEditorTabs
@@ -77,33 +82,37 @@ import com.intellij.ui.tabs.impl.TabLabel
 import com.intellij.ui.tabs.impl.TabPainterAdapter
 import com.intellij.util.ui.JBEmptyBorder
 import com.intellij.util.ui.JBInsets
+import com.intellij.util.ui.JBPoint
 import com.intellij.util.ui.JBSwingUtilities
 import com.intellij.util.ui.JBUI
 import com.intellij.util.ui.StartupUiUtil
 import com.intellij.util.ui.UIUtil
 import java.awt.AWTEvent
-import java.awt.BasicStroke
 import java.awt.BorderLayout
 import java.awt.Color
 import java.awt.Component
 import java.awt.Graphics
 import java.awt.Graphics2D
 import java.awt.Insets
+import java.awt.Point
 import java.awt.Rectangle
 import java.awt.RenderingHints
+import java.awt.Shape
 import java.awt.Toolkit
 import java.awt.event.AWTEventListener
 import java.awt.event.HierarchyEvent
 import java.awt.event.WindowAdapter
 import java.awt.event.WindowEvent
-import java.awt.geom.Area
+import java.awt.geom.AffineTransform
 import java.awt.geom.Path2D
-import java.awt.geom.RoundRectangle2D
+import java.awt.geom.PathIterator
+import java.awt.geom.Rectangle2D
 import java.util.function.Predicate
 import java.util.function.Supplier
 import javax.swing.JComponent
 import javax.swing.JFrame
 import javax.swing.SwingConstants
+import javax.swing.SwingUtilities
 import javax.swing.UIManager
 import javax.swing.border.AbstractBorder
 import javax.swing.border.Border
@@ -120,36 +129,35 @@ private val DEFAULT_THEME_IDS = setOf(
   "Darcula",
 )
 
+private fun isDefaultTheme(): Boolean {
+  val id = LafManager.getInstance().currentUIThemeLookAndFeel?.id ?: return false
+  return id in DEFAULT_THEME_IDS
+}
+
 internal val islandsInactiveAlpha: Float
   get() = JBUI.getFloat("Island.inactiveAlpha", 0.5f)
-
-internal val isManyIslandEnabled: Boolean
-  get() {
-    if (!ExperimentalUI.isNewUI()) return false
-
-    return when (JBUI.getInt("Islands", 0)) {
-      1 -> true
-      0 -> {
-        val id = LafManager.getInstance().currentUIThemeLookAndFeel?.id ?: return false
-        val isDefaultTheme = id in DEFAULT_THEME_IDS
-        !isDefaultTheme && AdvancedSettings.getBoolean("ide.ui.theme.custom.islands")
-      }
-      else -> false
-    }
-  }
 
 internal class IslandsUICustomization : InternalUICustomization() {
 
   private var isManyIslandEnabledCache: Boolean? = null
 
-  private var isManyIslandCustomTheme = false
-
   private val isManyIslandEnabled: Boolean
     get() {
       var value = isManyIslandEnabledCache
       if (value == null) {
-        value = com.intellij.openapi.application.impl.islands.isManyIslandEnabled
+        val isManyIslandCustomTheme: Boolean
+
+        if (ExperimentalUI.isNewUI()) {
+          val themeValue = JBUI.getInt("Islands", 0)
+          isManyIslandCustomTheme = themeValue == 0 && !isDefaultTheme() && AdvancedSettings.getBoolean("ide.ui.theme.custom.islands")
+          value = isManyIslandCustomTheme || themeValue == 1
+        }
+        else {
+          value = false
+          isManyIslandCustomTheme = false
+        }
         isManyIslandEnabledCache = value
+        IslandsState.setEnabled(value, isManyIslandCustomTheme)
       }
       return value
     }
@@ -196,9 +204,6 @@ internal class IslandsUICustomization : InternalUICustomization() {
     get() {
       return !isManyIslandEnabled
     }
-
-  override val isTabOccupiesWholeHeight: Boolean
-    get() = !isManyIslandEnabled
 
   override val isRoundedTabDuringDrag: Boolean
     get() = isManyIslandEnabled && (WindowRoundedCornersManager.isAvailable() || StartupUiUtil.isWaylandToolkit())
@@ -274,7 +279,7 @@ internal class IslandsUICustomization : InternalUICustomization() {
     val isToolWindow = UIUtil.getGeneralizedParentOfType(InternalDecorator::class.java, component) != null
 
     if (isToolWindow) {
-      if (component.background == JBColor.PanelBackground) {
+      if (component.background == JBColor.PanelBackground && !InternalDecoratorImpl.isRecursiveBackgroundUpdateDisabled(component)) {
         if (UIUtil.getGeneralizedParentOfType(SearchReplaceWrapper::class.java, component) != null) {
           return@AWTEventListener
         }
@@ -331,7 +336,7 @@ internal class IslandsUICustomization : InternalUICustomization() {
   }
 
   private fun applyMissingKeys() {
-    if (isManyIslandCustomTheme) {
+    if (IslandsState.isCustomEnabled()) {
       val uiDefaults = UIManager.getLookAndFeelDefaults()
 
       uiDefaults["MainToolbar.borderColor"] = Gray.TRANSPARENT
@@ -654,7 +659,7 @@ internal class IslandsUICustomization : InternalUICustomization() {
   override fun configureTerminalSearchReplaceComponent(component: EditorHeaderComponent): JComponent {
     component.putClientProperty("originalBorder", component.border)
     val header = configureSearchReplaceComponent(component, 6)
-    preventRecursiveBackgroundUpdateOnToolwindow(header)
+    InternalDecoratorImpl.preventRecursiveBackgroundUpdateOnToolwindow(header)
     return header
   }
 
@@ -787,7 +792,12 @@ internal class IslandsUICustomization : InternalUICustomization() {
             val parent = c.parent
             if (parent != null) {
               val index = parent.components.indexOf(c)
-              val top = if (index == 0) 1 else 4
+              val top = if (index == 0) {
+                if (UISettings.getInstance().editorTabPlacement == SwingConstants.TOP) 1 else 7
+              }
+              else {
+                4
+              }
               val bottom = if (index == parent.componentCount - 1) 1 else 4
               val leftRight = if (UISettings.getInstance().compactMode) 11 else 13
               return JBInsets(top, leftRight, bottom, leftRight)
@@ -919,58 +929,59 @@ internal class IslandsUICustomization : InternalUICustomization() {
     }
   }
 
-  private fun paintIslandArea(component: JComponent, g: Graphics2D) {
-    val width = component.width
-    val height = component.height
-
-    val shape = Area(Rectangle(0, 0, width, height))
-    val cornerRadius = JBUIScale.scale(JBUI.getInt("Island.arc", 10).toFloat())
-    val borderWith = JBUI.scale(JBUI.getInt("Island.borderWidth", 4))
-    val offset = borderWith / 2f
-    val offsetWidth = borderWith + 0.5f
-    val border = Area(RoundRectangle2D.Float(offset, offset,
-                                             width.toFloat() - offsetWidth, height.toFloat() - offsetWidth,
-                                             cornerRadius, cornerRadius))
-
-    shape.subtract(border)
-
-    g.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON)
-
-    paintIslandBackground(g, shape)
-
-    if (isIslandBorderLineNeeded(component)) {
-      paintIslandBorderLine(g, border)
-    }
-  }
-
-  private fun paintIslandBackground(gg: Graphics2D, shape: Area) {
-    gg.color = getMainBackgroundColor()
-    gg.fill(shape)
-  }
-
   private fun isIslandBorderLineNeeded(component: JComponent): Boolean {
     if (isIslandsGradientEnabled) return true
     val project = ProjectUtil.getProjectForComponent(component)
     return !IdeBackgroundUtil.isEditorBackgroundImageSet(project) // the border looks ugly with a background image
   }
 
-  private fun paintIslandBorderLine(gg: Graphics2D, border: Area) {
-    gg.color = JBColor.namedColor("Island.borderColor", getMainBackgroundColor())
-    gg.stroke = BasicStroke(JBUIScale.scale(1f), BasicStroke.CAP_ROUND, BasicStroke.JOIN_ROUND)
-    gg.draw(border)
+  private fun getLastOffset(component: JComponent): Point {
+    val rootPane = component.rootPane
+
+    val componentStart = Point()
+    SwingUtilities.convertPointToScreen(componentStart, component)
+
+    val rightStart = Point()
+    val rightSide = UIUtil.findComponentOfType(rootPane, ToolWindowRightToolbar::class.java)!!
+    SwingUtilities.convertPointToScreen(rightStart, rightSide)
+
+    val bottomStart = Point()
+    val bottomSide = UIUtil.findComponentOfType(rootPane, IdeStatusBarImpl::class.java)!!
+    SwingUtilities.convertPointToScreen(bottomStart, bottomSide)
+
+    val xDelta = rightStart.x - componentStart.x - component.width
+    val yDelta = bottomStart.y - componentStart.y - component.height
+
+    return JBPoint(if (xDelta == 0) 0 else 1, if (yDelta == 0) 0 else 1)
   }
 
+  private val sharedPath = Path2D.Float()
+  private val cachedShape = CachedBoundsShape(sharedPath)
+
   private fun paintIslandAreaRaw(component: JComponent, g: Graphics2D) {
-    val offset = JBUI.scale(JBUI.getInt("Island.borderWidth", 6) / 2)
+    val ctx = ScaleContext.create(g)
+
+    val width = PaintUtil.alignIntToInt(component.width, ctx, PaintUtil.RoundingMode.CEIL, null)
+    val height = PaintUtil.alignIntToInt(component.height, ctx, PaintUtil.RoundingMode.CEIL, null)
+    val arcValue = JBUI.getInt("Island.arc", 20)
+
+    if (arcValue == 0) {
+      if (isIslandBorderLineNeeded(component)) {
+        g.color = JBColor.namedColor("Island.borderColor", getMainBackgroundColor())
+        val lastOffset = getLastOffset(component)
+        g.drawRect(0, 0, width + lastOffset.x, height + lastOffset.y)
+      }
+      return
+    }
+
+    val offset = PaintUtil.alignIntToInt(JBUI.scale(JBUI.getInt("Island.borderWidth", 6) / 2), ctx, PaintUtil.RoundingMode.CEIL, null)
     val offset2 = offset * 2
     val offsetF = offset.toFloat()
 
-    val width = component.width
-    val height = component.height
     val widthF = width.toFloat()
     val heightF = height.toFloat()
 
-    val arc = JBUI.getInt("Island.arc", 20)
+    val arc = PaintUtil.alignIntToInt(arcValue, ctx, PaintUtil.RoundingMode.CEIL, null)
     val arcSizeF = JBUIScale.scale(arc / 2f)
 
     g.color = getMainBackgroundColor()
@@ -980,42 +991,46 @@ internal class IslandsUICustomization : InternalUICustomization() {
     g.fillRect(0, offset, offset, height - offset2)
     g.fillRect(width - offset, offset, offset, height - offset2)
 
-    val topLeft = Path2D.Float()
-    topLeft.moveTo(offsetF, offsetF)
-    topLeft.lineTo(arcSizeF + offsetF, offsetF)
-    topLeft.quadTo(offsetF, offsetF, offsetF, arcSizeF + offsetF)
-    topLeft.closePath()
-
-    val topRight = Path2D.Float()
-    topRight.moveTo(widthF - arcSizeF - offsetF, offsetF)
-    topRight.quadTo(widthF - offsetF, offsetF, widthF - offsetF, arcSizeF + offsetF)
-    topRight.lineTo(widthF - offsetF, offsetF)
-    topRight.closePath()
-
-    val bottomLeft = Path2D.Float()
-    bottomLeft.moveTo(offsetF, heightF - arcSizeF - offsetF)
-    bottomLeft.quadTo(offsetF, heightF - offsetF, arcSizeF + offsetF, heightF - offsetF)
-    bottomLeft.lineTo(offsetF, heightF - offsetF)
-    bottomLeft.closePath()
-
-    val bottomRight = Path2D.Float()
-    bottomRight.moveTo(widthF - arcSizeF - offsetF, heightF - offsetF)
-    bottomRight.quadTo(widthF - offsetF, heightF - offsetF, widthF - offsetF, heightF - arcSizeF - offsetF)
-    bottomRight.lineTo(widthF - offsetF, heightF - offsetF)
-    bottomRight.closePath()
-
     g.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON)
     g.setRenderingHint(RenderingHints.KEY_INTERPOLATION, RenderingHints.VALUE_INTERPOLATION_BICUBIC)
     g.setRenderingHint(RenderingHints.KEY_ALPHA_INTERPOLATION, RenderingHints.VALUE_ALPHA_INTERPOLATION_QUALITY)
 
-    g.fill(topLeft)
-    g.fill(topRight)
-    g.fill(bottomLeft)
-    g.fill(bottomRight)
+    sharedPath.reset()
+    sharedPath.moveTo(offsetF, offsetF)
+    sharedPath.lineTo(arcSizeF + offsetF, offsetF)
+    sharedPath.quadTo(offsetF, offsetF, offsetF, arcSizeF + offsetF)
+    sharedPath.closePath()
+    cachedShape.updateBounds(offsetF, offsetF, arcSizeF, arcSizeF)
+    g.fill(cachedShape)
+
+    sharedPath.reset()
+    sharedPath.moveTo(widthF - arcSizeF - offsetF, offsetF)
+    sharedPath.quadTo(widthF - offsetF, offsetF, widthF - offsetF, arcSizeF + offsetF)
+    sharedPath.lineTo(widthF - offsetF, offsetF)
+    sharedPath.closePath()
+    cachedShape.updateBounds(widthF - arcSizeF - offsetF, offsetF, arcSizeF, arcSizeF)
+    g.fill(cachedShape)
+
+    sharedPath.reset()
+    sharedPath.moveTo(offsetF, heightF - arcSizeF - offsetF)
+    sharedPath.quadTo(offsetF, heightF - offsetF, arcSizeF + offsetF, heightF - offsetF)
+    sharedPath.lineTo(offsetF, heightF - offsetF)
+    sharedPath.closePath()
+    cachedShape.updateBounds(offsetF, heightF - arcSizeF - offsetF, arcSizeF, arcSizeF)
+    g.fill(cachedShape)
+
+    sharedPath.reset()
+    sharedPath.moveTo(widthF - arcSizeF - offsetF, heightF - offsetF)
+    sharedPath.quadTo(widthF - offsetF, heightF - offsetF, widthF - offsetF, heightF - arcSizeF - offsetF)
+    sharedPath.lineTo(widthF - offsetF, heightF - offsetF)
+    sharedPath.closePath()
+    cachedShape.updateBounds(widthF - arcSizeF - offsetF, heightF - offsetF, arcSizeF, arcSizeF)
+    g.fill(cachedShape)
 
     if (isIslandBorderLineNeeded(component)) {
       val arcSize = JBUI.scale(arc)
-      val halfArcSize = JBUI.scale(JBUI.getInt("Island.borderArcLength", 14))
+      val halfArcSize =
+        PaintUtil.alignIntToInt(JBUI.scale(JBUI.getInt("Island.borderArcLength", 14)), ctx, PaintUtil.RoundingMode.CEIL, null)
 
       g.color = JBColor.namedColor("Island.borderColor", getMainBackgroundColor())
 
@@ -1237,7 +1252,7 @@ internal class IslandsUICustomization : InternalUICustomization() {
       }
     }
 
-    val hovered = tabs.isHoveredTab(label)
+    val hovered = tabs.isHoveredOrWithPopup(label)
     val isGradient = isIslandsGradientEnabled && !CustomWindowHeaderUtil.isCompactHeader() && isColorfulToolbar(frame)
     val rect = Rectangle(label.width, label.height)
 
@@ -1259,7 +1274,7 @@ internal class IslandsUICustomization : InternalUICustomization() {
     else if (lastIndex > 1 && index < lastIndex) {
       val nextTab = tabs.getTabAt(index + 1)
 
-      if (nextTab != tabs.selectedInfo && !tabs.isHoveredTab(tabs.getTabLabel(nextTab))) {
+      if (nextTab != tabs.selectedInfo && !tabs.isHoveredOrWithPopup(tabs.getTabLabel(nextTab))) {
         val gg = if (isGradient) IdeBackgroundUtil.getOriginalGraphics(g) else g
         val border = JBUI.scale(1).toDouble()
         val width = label.width - border
@@ -1328,4 +1343,34 @@ private class ManyIslandDivider(isVertical: Boolean, splitter: Splittable) : One
       super.paint(g)
     }
   }
+}
+
+private class CachedBoundsShape(private val delegate: Shape) : Shape {
+  private val cachedBounds2D = Rectangle2D.Float()
+  private val cachedBounds = Rectangle()
+
+  fun updateBounds(x: Float, y: Float, w: Float, h: Float) {
+    cachedBounds2D.setRect(x, y, w, h)
+    cachedBounds.setRect(x.toDouble(), y.toDouble(), w.toDouble(), h.toDouble())
+  }
+
+  override fun getBounds(): Rectangle = cachedBounds
+
+  override fun getBounds2D(): Rectangle2D = cachedBounds2D
+
+  override fun contains(x: Double, y: Double): Boolean = delegate.contains(x, y)
+
+  override fun contains(p: java.awt.geom.Point2D): Boolean = delegate.contains(p)
+
+  override fun intersects(x: Double, y: Double, w: Double, h: Double): Boolean = delegate.intersects(x, y, w, h)
+
+  override fun intersects(r: Rectangle2D): Boolean = delegate.intersects(r)
+
+  override fun contains(x: Double, y: Double, w: Double, h: Double): Boolean = delegate.contains(x, y, w, h)
+
+  override fun contains(r: Rectangle2D): Boolean = delegate.contains(r)
+
+  override fun getPathIterator(at: AffineTransform?): PathIterator = delegate.getPathIterator(at)
+
+  override fun getPathIterator(at: AffineTransform?, flatness: Double): PathIterator = delegate.getPathIterator(at, flatness)
 }

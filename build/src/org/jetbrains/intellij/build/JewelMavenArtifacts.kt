@@ -1,4 +1,4 @@
-// Copyright 2000-2025 JetBrains s.r.o. and contributors. Use of this source code is governed by the Apache 2.0 license.
+// Copyright 2000-2026 JetBrains s.r.o. and contributors. Use of this source code is governed by the Apache 2.0 license.
 package org.jetbrains.intellij.build
 
 import com.intellij.util.text.SemVer
@@ -23,6 +23,15 @@ import org.jetbrains.jps.model.module.JpsModuleDependency
 import kotlin.io.path.exists
 
 private const val GROUP_ID: String = "org.jetbrains.jewel"
+
+/**
+ * Each entry represents a prefix for Platform dependencies which are being published to Maven Central.
+ * And distinct Maven Central publication credentials are issued per namespace/groupId.
+ * Please do not edit this list since every entry requires a corresponding change on the JetBrains infrastructure.
+ */
+private val PLATFORM_DEPENDENCY_PREFIXES: Set<String> = setOf(
+  "com.jetbrains.intellij.platform:icons-",
+)
 
 private val CORE: PersistentMap<String, String> = persistentHashMapOf(
   "intellij.platform.jewel.foundation" to "jewel-foundation",
@@ -129,6 +138,12 @@ internal object JewelMavenArtifacts {
         "org.jetbrains.compose.components" -> {
           add(dependency.withTransitiveDependencies(DependencyScope.COMPILE))
         }
+        "net.java.dev.jna" -> {
+          // Add it only to Jewel Standalone INT UI modules, as it's unnecessary for other modules
+          if (module.name == "intellij.platform.jewel.intUi.standalone") {
+            add(dependency.withTransitiveDependencies(DependencyScope.COMPILE))
+          }
+        }
 
         // else -> ignore the dependency, as it comes through transitively, usually from Compose.
 
@@ -185,7 +200,7 @@ internal object JewelMavenArtifacts {
 
   fun validate(context: BuildContext, mavenArtifacts: Collection<GeneratedMavenArtifacts>) {
     ALL_MODULES.asSequence()
-      .map(context::findRequiredModule)
+      .map { context.outputProvider.findRequiredModule(it) }
       .flatMap { it.modulesTree() }
       .distinct().forEach { module ->
         val artifact = mavenArtifacts.singleOrNull { (it) -> it.name == module.name }
@@ -193,9 +208,9 @@ internal object JewelMavenArtifacts {
           checkNotNull(artifact) {
             "No maven artifact is created for the module ${module.name}:\n$mavenArtifacts"
           }
-          check(artifact.coordinates.groupId == GROUP_ID) {
-            "The module ${module.name} has groupId=${artifact.coordinates.groupId} " +
-            "but it's expected to have groupId=$GROUP_ID because Maven Central publication credentials are issues per namespace/groupId"
+          check(artifact.coordinates.groupId == GROUP_ID || PLATFORM_DEPENDENCY_PREFIXES.any { "${artifact.coordinates}".startsWith(it) }) {
+            "A ${module.name} module has unknown groupId=${artifact.coordinates.groupId}, " +
+            "it is not allowed because Maven Central publication credentials are issued per namespace/groupId"
           }
         }
       }

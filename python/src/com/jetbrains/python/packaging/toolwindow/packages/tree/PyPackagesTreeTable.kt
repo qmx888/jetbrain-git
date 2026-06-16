@@ -20,17 +20,20 @@ import com.intellij.ui.components.JBTreeTable
 import com.intellij.ui.hover.TableHoverListener
 import com.intellij.ui.hover.TreeHoverListener
 import com.intellij.ui.treeStructure.treetable.TreeTableModel
+import com.jetbrains.python.packaging.cache.hasMorePagesAfterPageIndex
 import com.jetbrains.python.packaging.toolwindow.PyPackagingToolWindowPanel
 import com.jetbrains.python.packaging.toolwindow.PyPackagingToolWindowService
 import com.jetbrains.python.packaging.toolwindow.model.DisplayablePackage
 import com.jetbrains.python.packaging.toolwindow.model.ExpandResultNode
 import com.jetbrains.python.packaging.toolwindow.model.InstallablePackage
 import com.jetbrains.python.packaging.toolwindow.model.InstalledPackage
+import com.jetbrains.python.packaging.toolwindow.model.LoadingNode
 import com.jetbrains.python.packaging.toolwindow.model.RequirementPackage
 import com.jetbrains.python.packaging.toolwindow.model.WorkspaceMember
 import com.jetbrains.python.packaging.toolwindow.packages.tree.renderers.PackageNameCellRenderer
 import com.jetbrains.python.packaging.toolwindow.packages.tree.renderers.PackageVersionCellRenderer
 import com.jetbrains.python.sdk.isReadOnly
+import org.intellij.lang.annotations.Language
 import org.jetbrains.annotations.ApiStatus
 import java.awt.Component
 import java.awt.Point
@@ -48,7 +51,7 @@ import javax.swing.event.TreeSelectionListener
 import javax.swing.tree.TreeSelectionModel.SINGLE_TREE_SELECTION
 
 @ApiStatus.Internal
-class PyPackagesTreeTable(
+internal class PyPackagesTreeTable(
   val project: Project,
   private val controller: PyPackagingToolWindowPanel,
   private var treeListener: PyPackagesTreeListener? = null,
@@ -57,6 +60,8 @@ class PyPackagesTreeTable(
   companion object {
     private const val COLUMN_PROPORTION = 0.3f
     private const val POPUP_MENU_PLACE = "PackagePopup"
+
+    @Language("devkit-action-id")
     private const val PACKAGE_ACTION_GROUP_ID = "PyPackageToolwindowContext"
     private const val INVALID_POSITION = -1
     internal val TREE_TABLE_KEY: Key<PyPackagesTreeTable> = Key.create("PyPackageToolwindow.TreeTable")
@@ -64,7 +69,8 @@ class PyPackagesTreeTable(
 
   private val treeTableModel: PyPackagesTreeTableModel
     get() = model as PyPackagesTreeTableModel
-  private val packagingService = project.service<PyPackagingToolWindowService>()
+  private val packagingService: PyPackagingToolWindowService
+    get() = project.service<PyPackagingToolWindowService>()
 
   var hoveredColumn: Int = INVALID_POSITION
 
@@ -155,6 +161,7 @@ class PyPackagesTreeTable(
       is InstallablePackage -> controller.packageSelected(pkg)
       is RequirementPackage -> controller.packageSelected(pkg)
       is WorkspaceMember -> controller.packageSelected(pkg)
+      is LoadingNode -> {}
       is ExpandResultNode -> controller.setEmpty()
     }
   }
@@ -239,13 +246,14 @@ class PyPackagesTreeTable(
       val node = table.getValueAt(row, 0) as? DisplayablePackage ?: return
 
       if (shouldShowPopupForNode(node)) {
+        handlePackageSelection(node)
         createAndShowPopupMenu(comp, x, y, actionGroup)
       }
     }
 
     private fun shouldShowPopupForNode(node: DisplayablePackage): Boolean = when (node) {
       is InstallablePackage, is InstalledPackage -> true
-      is RequirementPackage, is ExpandResultNode, is WorkspaceMember -> false
+      is RequirementPackage, is ExpandResultNode, is WorkspaceMember, is LoadingNode -> false
     }
 
     private fun createAndShowPopupMenu(comp: Component?, x: Int, y: Int, actionGroup: ActionGroup) {
@@ -263,11 +271,15 @@ class PyPackagesTreeTable(
   }
 
   private fun loadMoreItems(node: ExpandResultNode) {
-    val result = packagingService.getMoreResultsForRepo(node.repository, items.size - 1)
-    items = items.dropLast(1) + result.packages
-    if (result.moreItems > 0) {
-      node.more = result.moreItems
-      items = items + listOf(node)
+    val viewData = packagingService.getMoreResultsForPage(node.repository, node.result, node.pageIndex).getOr { 
+      packagingService.rerunSearch()
+      return
+    }
+
+    items = items.dropLast(1) + viewData.displayable
+    if (viewData.result.hasMorePagesAfterPageIndex(viewData.pageIndex)) {
+      node.pageIndex = viewData.pageIndex
+      items = items + node
     }
   }
 
@@ -304,7 +316,7 @@ class PyPackagesTreeTable(
 
   private fun getTextForCopy(): String? = when (val pkg = selectedItem()) {
     is InstalledPackage, is InstallablePackage, is RequirementPackage, is WorkspaceMember -> pkg.name
-    is ExpandResultNode, null -> null
+    is ExpandResultNode, is LoadingNode, null -> null
   }
 }
 

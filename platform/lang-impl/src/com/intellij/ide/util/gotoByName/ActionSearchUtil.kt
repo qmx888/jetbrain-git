@@ -1,4 +1,6 @@
 // Copyright 2000-2023 JetBrains s.r.o. and contributors. Use of this source code is governed by the Apache 2.0 license.
+@file:ApiStatus.Internal
+
 package com.intellij.ide.util.gotoByName
 
 import com.intellij.ide.ui.RegistryTextOptionDescriptor
@@ -50,7 +52,7 @@ fun buildMatcher(pattern: String): Matcher {
 }
 
 fun calcElementWeight(element: Any, pattern: String, matcher: MinusculeMatcher): Int? {
-  val actionText = getActionText(element)
+  val actionText = getActionText(element)?.trim { !it.isLetterOrDigit() }
   var degree = calculateDegree(matcher, actionText)
   if (degree == null) return null
 

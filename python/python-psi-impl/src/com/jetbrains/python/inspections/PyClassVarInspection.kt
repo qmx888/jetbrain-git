@@ -31,13 +31,17 @@ import com.jetbrains.python.psi.types.PyTypeParameterType
 import com.jetbrains.python.psi.types.TypeEvalContext
 
 class PyClassVarInspection : PyInspection() {
-
   override fun buildVisitor(
     holder: ProblemsHolder,
     isOnTheFly: Boolean,
     session: LocalInspectionToolSession,
-  ): PsiElementVisitor = Visitor(holder,
-                                 PyInspectionVisitor.getContext(session))
+  ): PsiElementVisitor {
+    val context = PyInspectionVisitor.getContext(session)
+    if (context.usesExternalTypeEngine) {
+      return PsiElementVisitor.EMPTY_VISITOR
+    }
+    return Visitor(holder, context)
+  }
 
   private class Visitor(holder: ProblemsHolder, context: TypeEvalContext) : PyInspectionVisitor(holder, context) {
 
@@ -124,8 +128,8 @@ class PyClassVarInspection : PyInspection() {
             val expectedName = PythonDocumentationProvider.getTypeName(expectedType, myTypeEvalContext)
             val actualName = PythonDocumentationProvider.getTypeName(actualType, myTypeEvalContext)
             registerProblem(node.findAssignedValue(),
-                            PyPsiBundle.message("INSP.type.checker.expected.type.got.type.instead",
-                                                expectedName, actualName))
+                            PyPsiBundle.problemMessage("INSP.type.checker.expected.type.got.type.instead",
+                                                       expectedName, actualName))
           }
         }
       }

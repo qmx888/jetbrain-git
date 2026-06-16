@@ -61,7 +61,7 @@ class DistributedTestModel private constructor(
         
         private val __RdTestSessionNullableSerializer = RdTestSession.nullable()
         
-        const val serializationHash = 217769322142192170L
+        const val serializationHash = 1019449310822351010L
         
     }
     override val serializersOwner: ISerializersOwner get() = DistributedTestModel
@@ -448,12 +448,16 @@ data class RdAllureUpdateStepInfo (
  */
 data class RdProductInfo (
     val productCode: String,
-    val productVersion: String
+    val productVersion: String,
+    val productName: String,
+    val productFullName: String
 ) : IPrintable {
     //write-marshaller
     private fun write(ctx: SerializationCtx, buffer: AbstractBuffer)  {
         buffer.writeString(productCode)
         buffer.writeString(productVersion)
+        buffer.writeString(productName)
+        buffer.writeString(productFullName)
     }
     //companion
     
@@ -465,7 +469,9 @@ data class RdProductInfo (
         override fun read(ctx: SerializationCtx, buffer: AbstractBuffer): RdProductInfo  {
             val productCode = buffer.readString()
             val productVersion = buffer.readString()
-            return RdProductInfo(productCode, productVersion)
+            val productName = buffer.readString()
+            val productFullName = buffer.readString()
+            return RdProductInfo(productCode, productVersion, productName, productFullName)
         }
         
         override fun write(ctx: SerializationCtx, buffer: AbstractBuffer, value: RdProductInfo)  {
@@ -487,6 +493,8 @@ data class RdProductInfo (
         
         if (productCode != other.productCode) return false
         if (productVersion != other.productVersion) return false
+        if (productName != other.productName) return false
+        if (productFullName != other.productFullName) return false
         
         return true
     }
@@ -495,6 +503,8 @@ data class RdProductInfo (
         var __r = 0
         __r = __r*31 + productCode.hashCode()
         __r = __r*31 + productVersion.hashCode()
+        __r = __r*31 + productName.hashCode()
+        __r = __r*31 + productFullName.hashCode()
         return __r
     }
     //pretty print
@@ -503,6 +513,8 @@ data class RdProductInfo (
         printer.indent {
             print("productCode = "); productCode.print(printer); println()
             print("productVersion = "); productVersion.print(printer); println()
+            print("productName = "); productName.print(printer); println()
+            print("productFullName = "); productFullName.print(printer); println()
         }
         printer.print(")")
     }
@@ -698,6 +710,7 @@ class RdTestSession private constructor(
     private val _visibleFrameNames: RdCall<Unit, List<String>>,
     private val _projectsNames: RdCall<Unit, List<String>>,
     private val _makeScreenshot: RdCall<String, Boolean>,
+    private val _dumpThreads: RdCall<Unit, Boolean>,
     private val _isResponding: RdCall<Unit, Boolean>,
     private val _projectsAreInitialised: RdCall<Unit, Boolean>,
     private val _getProductCodeAndVersion: RdCall<Unit, RdProductInfo>
@@ -724,6 +737,7 @@ class RdTestSession private constructor(
         RdCall.write(ctx, buffer, _visibleFrameNames)
         RdCall.write(ctx, buffer, _projectsNames)
         RdCall.write(ctx, buffer, _makeScreenshot)
+        RdCall.write(ctx, buffer, _dumpThreads)
         RdCall.write(ctx, buffer, _isResponding)
         RdCall.write(ctx, buffer, _projectsAreInitialised)
         RdCall.write(ctx, buffer, _getProductCodeAndVersion)
@@ -756,10 +770,11 @@ class RdTestSession private constructor(
             val _visibleFrameNames = RdCall.read(ctx, buffer, FrameworkMarshallers.Void, __StringListSerializer)
             val _projectsNames = RdCall.read(ctx, buffer, FrameworkMarshallers.Void, __StringListSerializer)
             val _makeScreenshot = RdCall.read(ctx, buffer, FrameworkMarshallers.String, FrameworkMarshallers.Bool)
+            val _dumpThreads = RdCall.read(ctx, buffer, FrameworkMarshallers.Void, FrameworkMarshallers.Bool)
             val _isResponding = RdCall.read(ctx, buffer, FrameworkMarshallers.Void, FrameworkMarshallers.Bool)
             val _projectsAreInitialised = RdCall.read(ctx, buffer, FrameworkMarshallers.Void, FrameworkMarshallers.Bool)
             val _getProductCodeAndVersion = RdCall.read(ctx, buffer, FrameworkMarshallers.Void, RdProductInfo)
-            return RdTestSession(rdAgentInfo, runTestMethod, traceCategories, debugCategories, _ready, _sendException, _startAllureStep, _updateAllureStep, _stopAllureStep, _exitApp, _showNotification, _forceLeaveAllModals, _closeAllOpenedProjects, _runNextAction, _requestFocus, _isFocused, _visibleFrameNames, _projectsNames, _makeScreenshot, _isResponding, _projectsAreInitialised, _getProductCodeAndVersion).withId(_id)
+            return RdTestSession(rdAgentInfo, runTestMethod, traceCategories, debugCategories, _ready, _sendException, _startAllureStep, _updateAllureStep, _stopAllureStep, _exitApp, _showNotification, _forceLeaveAllModals, _closeAllOpenedProjects, _runNextAction, _requestFocus, _isFocused, _visibleFrameNames, _projectsNames, _makeScreenshot, _dumpThreads, _isResponding, _projectsAreInitialised, _getProductCodeAndVersion).withId(_id)
         }
         
         override fun write(ctx: SerializationCtx, buffer: AbstractBuffer, value: RdTestSession)  {
@@ -787,6 +802,7 @@ class RdTestSession private constructor(
     val visibleFrameNames: RdCall<Unit, List<String>> get() = _visibleFrameNames
     val projectsNames: RdCall<Unit, List<String>> get() = _projectsNames
     val makeScreenshot: RdCall<String, Boolean> get() = _makeScreenshot
+    val dumpThreads: RdCall<Unit, Boolean> get() = _dumpThreads
     val isResponding: RdCall<Unit, Boolean> get() = _isResponding
     val projectsAreInitialised: RdCall<Unit, Boolean> get() = _projectsAreInitialised
     val getProductCodeAndVersion: RdCall<Unit, RdProductInfo> get() = _getProductCodeAndVersion
@@ -810,6 +826,7 @@ class RdTestSession private constructor(
         _visibleFrameNames.async = true
         _projectsNames.async = true
         _makeScreenshot.async = true
+        _dumpThreads.async = true
         _isResponding.async = true
         _projectsAreInitialised.async = true
         _getProductCodeAndVersion.async = true
@@ -831,6 +848,7 @@ class RdTestSession private constructor(
         bindableChildren.add("visibleFrameNames" to _visibleFrameNames)
         bindableChildren.add("projectsNames" to _projectsNames)
         bindableChildren.add("makeScreenshot" to _makeScreenshot)
+        bindableChildren.add("dumpThreads" to _dumpThreads)
         bindableChildren.add("isResponding" to _isResponding)
         bindableChildren.add("projectsAreInitialised" to _projectsAreInitialised)
         bindableChildren.add("getProductCodeAndVersion" to _getProductCodeAndVersion)
@@ -864,6 +882,7 @@ class RdTestSession private constructor(
         RdCall<String, Boolean>(FrameworkMarshallers.String, FrameworkMarshallers.Bool),
         RdCall<Unit, Boolean>(FrameworkMarshallers.Void, FrameworkMarshallers.Bool),
         RdCall<Unit, Boolean>(FrameworkMarshallers.Void, FrameworkMarshallers.Bool),
+        RdCall<Unit, Boolean>(FrameworkMarshallers.Void, FrameworkMarshallers.Bool),
         RdCall<Unit, RdProductInfo>(FrameworkMarshallers.Void, RdProductInfo)
     )
     
@@ -892,6 +911,7 @@ class RdTestSession private constructor(
             print("visibleFrameNames = "); _visibleFrameNames.print(printer); println()
             print("projectsNames = "); _projectsNames.print(printer); println()
             print("makeScreenshot = "); _makeScreenshot.print(printer); println()
+            print("dumpThreads = "); _dumpThreads.print(printer); println()
             print("isResponding = "); _isResponding.print(printer); println()
             print("projectsAreInitialised = "); _projectsAreInitialised.print(printer); println()
             print("getProductCodeAndVersion = "); _getProductCodeAndVersion.print(printer); println()
@@ -920,6 +940,7 @@ class RdTestSession private constructor(
             _visibleFrameNames.deepClonePolymorphic(),
             _projectsNames.deepClonePolymorphic(),
             _makeScreenshot.deepClonePolymorphic(),
+            _dumpThreads.deepClonePolymorphic(),
             _isResponding.deepClonePolymorphic(),
             _projectsAreInitialised.deepClonePolymorphic(),
             _getProductCodeAndVersion.deepClonePolymorphic()
@@ -935,8 +956,10 @@ class RdTestSession private constructor(
  */
 data class RdTestSessionException (
     val type: String,
-    val messageWithStacktrace: String,
-    val message: String?,
+    val messageWithDetails: String,
+    val messageForTestHistoryConsistency: String,
+    val messageForDiogen: String?,
+    val printToStringForDiogen: String,
     val stacktrace: List<RdTestSessionStackTraceElement>,
     val cause: RdTestSessionLightException?,
     val suppressedExceptions: List<RdTestSessionLightException>?
@@ -944,8 +967,10 @@ data class RdTestSessionException (
     //write-marshaller
     private fun write(ctx: SerializationCtx, buffer: AbstractBuffer)  {
         buffer.writeString(type)
-        buffer.writeString(messageWithStacktrace)
-        buffer.writeNullable(message) { buffer.writeString(it) }
+        buffer.writeString(messageWithDetails)
+        buffer.writeString(messageForTestHistoryConsistency)
+        buffer.writeNullable(messageForDiogen) { buffer.writeString(it) }
+        buffer.writeString(printToStringForDiogen)
         buffer.writeList(stacktrace) { v -> RdTestSessionStackTraceElement.write(ctx, buffer, v) }
         buffer.writeNullable(cause) { RdTestSessionLightException.write(ctx, buffer, it) }
         buffer.writeNullable(suppressedExceptions) { buffer.writeList(it) { v -> RdTestSessionLightException.write(ctx, buffer, v) } }
@@ -959,12 +984,14 @@ data class RdTestSessionException (
         @Suppress("UNCHECKED_CAST")
         override fun read(ctx: SerializationCtx, buffer: AbstractBuffer): RdTestSessionException  {
             val type = buffer.readString()
-            val messageWithStacktrace = buffer.readString()
-            val message = buffer.readNullable { buffer.readString() }
+            val messageWithDetails = buffer.readString()
+            val messageForTestHistoryConsistency = buffer.readString()
+            val messageForDiogen = buffer.readNullable { buffer.readString() }
+            val printToStringForDiogen = buffer.readString()
             val stacktrace = buffer.readList { RdTestSessionStackTraceElement.read(ctx, buffer) }
             val cause = buffer.readNullable { RdTestSessionLightException.read(ctx, buffer) }
             val suppressedExceptions = buffer.readNullable { buffer.readList { RdTestSessionLightException.read(ctx, buffer) } }
-            return RdTestSessionException(type, messageWithStacktrace, message, stacktrace, cause, suppressedExceptions)
+            return RdTestSessionException(type, messageWithDetails, messageForTestHistoryConsistency, messageForDiogen, printToStringForDiogen, stacktrace, cause, suppressedExceptions)
         }
         
         override fun write(ctx: SerializationCtx, buffer: AbstractBuffer, value: RdTestSessionException)  {
@@ -985,8 +1012,10 @@ data class RdTestSessionException (
         other as RdTestSessionException
         
         if (type != other.type) return false
-        if (messageWithStacktrace != other.messageWithStacktrace) return false
-        if (message != other.message) return false
+        if (messageWithDetails != other.messageWithDetails) return false
+        if (messageForTestHistoryConsistency != other.messageForTestHistoryConsistency) return false
+        if (messageForDiogen != other.messageForDiogen) return false
+        if (printToStringForDiogen != other.printToStringForDiogen) return false
         if (stacktrace != other.stacktrace) return false
         if (cause != other.cause) return false
         if (suppressedExceptions != other.suppressedExceptions) return false
@@ -997,8 +1026,10 @@ data class RdTestSessionException (
     override fun hashCode(): Int  {
         var __r = 0
         __r = __r*31 + type.hashCode()
-        __r = __r*31 + messageWithStacktrace.hashCode()
-        __r = __r*31 + if (message != null) message.hashCode() else 0
+        __r = __r*31 + messageWithDetails.hashCode()
+        __r = __r*31 + messageForTestHistoryConsistency.hashCode()
+        __r = __r*31 + if (messageForDiogen != null) messageForDiogen.hashCode() else 0
+        __r = __r*31 + printToStringForDiogen.hashCode()
         __r = __r*31 + stacktrace.hashCode()
         __r = __r*31 + if (cause != null) cause.hashCode() else 0
         __r = __r*31 + if (suppressedExceptions != null) suppressedExceptions.hashCode() else 0
@@ -1009,8 +1040,10 @@ data class RdTestSessionException (
         printer.println("RdTestSessionException (")
         printer.indent {
             print("type = "); type.print(printer); println()
-            print("messageWithStacktrace = "); messageWithStacktrace.print(printer); println()
-            print("message = "); message.print(printer); println()
+            print("messageWithDetails = "); messageWithDetails.print(printer); println()
+            print("messageForTestHistoryConsistency = "); messageForTestHistoryConsistency.print(printer); println()
+            print("messageForDiogen = "); messageForDiogen.print(printer); println()
+            print("printToStringForDiogen = "); printToStringForDiogen.print(printer); println()
             print("stacktrace = "); stacktrace.print(printer); println()
             print("cause = "); cause.print(printer); println()
             print("suppressedExceptions = "); suppressedExceptions.print(printer); println()

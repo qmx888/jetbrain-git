@@ -56,6 +56,7 @@ import org.jetbrains.kotlin.idea.formatter.KotlinObsoleteStyleGuide
 import org.jetbrains.kotlin.idea.formatter.KotlinOfficialStyleGuide
 import org.jetbrains.kotlin.idea.formatter.kotlinCodeStyleDefaults
 import org.jetbrains.kotlin.idea.framework.KotlinSdkType
+import org.jetbrains.kotlin.idea.maven.compilerPlugin.toJpsVersionAgnosticKotlinBundledPath
 import org.jetbrains.kotlin.idea.notification.asText
 import org.jetbrains.kotlin.idea.notification.catchNotificationTextAsync
 import org.jetbrains.kotlin.idea.notification.catchNotificationsAsync
@@ -2264,7 +2265,7 @@ abstract class AbstractKotlinMavenImporterTest(private val createStdProjectFolde
             val kotlinMainPluginVersion = "1.5.10"
             val kotlinMavenPluginVersion1 = "1.7.21"
             val kotlinMavenPluginVersion2 = "1.5.31"
-            val notifications = catchNotificationsAsync(project, "Kotlin JPS plugin") {
+            val notifications = catchNotificationsAsync(project, "Kotlin JPS plugin", testRootDisposable) {
                 val mainPom = createProjectPom(
                     """
                     <groupId>test</groupId>
@@ -2355,7 +2356,7 @@ abstract class AbstractKotlinMavenImporterTest(private val createStdProjectFolde
         @Test
         fun testJpsCompilerUnsupportedVersionDown() = runBlocking {
             val version = "1.1.0"
-            val notifications = catchNotificationsAsync(project) {
+            val notifications = catchNotificationsAsync(project, testRootDisposable) {
                 doUnsupportedVersionTest(version, KotlinJpsPluginSettings.fallbackVersionForOutdatedCompiler)
             }
 
@@ -2372,7 +2373,7 @@ abstract class AbstractKotlinMavenImporterTest(private val createStdProjectFolde
         fun testJpsCompilerUnsupportedVersionUp() = runBlocking {
             val maxVersion = KotlinJpsPluginSettings.jpsMaximumSupportedVersion
             val versionToImport = KotlinVersion(maxVersion.major, maxVersion.minor, maxVersion.minor + 1)
-            val text = catchNotificationTextAsync(project, "Kotlin JPS plugin") {
+            val text = catchNotificationTextAsync(project, "Kotlin JPS plugin", testRootDisposable) {
                 doUnsupportedVersionTest(versionToImport.toString())
             }
 
@@ -2424,7 +2425,7 @@ abstract class AbstractKotlinMavenImporterTest(private val createStdProjectFolde
 
             try {
                 val version = "1.1.0"
-                val notifications = catchNotificationsAsync(project) {
+                val notifications = catchNotificationsAsync(project, testRootDisposable) {
                     doUnsupportedVersionTest(version, KotlinJpsPluginSettings.fallbackVersionForOutdatedCompiler)
                 }
 
@@ -3560,7 +3561,7 @@ abstract class AbstractKotlinMavenImporterTest(private val createStdProjectFolde
     protected suspend fun doJvmTarget6Test(version: String?): Pair<IKotlinFacetSettings, List<Notification>> {
         createProjectSubDirs("src/main/kotlin", "src/main/kotlin.jvm", "src/test/kotlin", "src/test/kotlin.jvm")
 
-        val notifications = catchNotificationsAsync(project, "Kotlin Maven project import") {
+        val notifications = catchNotificationsAsync(project, "Kotlin Maven project import", testRootDisposable) {
             importProjectAsync(
                 """
                     <groupId>test</groupId>
@@ -3651,7 +3652,7 @@ abstract class AbstractKotlinMavenImporterTest(private val createStdProjectFolde
                     KotlinArtifacts.lombokCompilerPluginPath,
                     KotlinArtifacts.noargCompilerPluginPath,
                     KotlinArtifacts.samWithReceiverCompilerPluginPath,
-                ).map { it.toString() },
+                ).map { it.toJpsVersionAgnosticKotlinBundledPath() },
                 facetSettings.compilerArguments?.pluginClasspaths?.sorted()
             )
         }

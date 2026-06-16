@@ -7,11 +7,22 @@ import org.jetbrains.annotations.ApiStatus
 
 @ApiStatus.Internal
 @Serializable
-data class CondaEnvInfo(
+internal data class CondaEnvInfo(
   @SerialName("envs")
   val envs: List<String>,
   @SerialName("envs_dirs")
   val envsDirs: List<String> = emptyList(),
   @SerialName("conda_prefix")
   val condaPrefix: String? = null,
+  @SerialName("envs_details")
+  val envsDetails: Map<String, CondaEnvDetail>? = null,
+)
+
+@ApiStatus.Internal
+@Serializable
+internal data class CondaEnvDetail(
+  @SerialName("name")
+  val name: String,
+  @SerialName("base")
+  val base: Boolean,
 )

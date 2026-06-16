@@ -1,4 +1,4 @@
-// Copyright 2000-2025 JetBrains s.r.o. and contributors. Use of this source code is governed by the Apache 2.0 license.
+// Copyright 2000-2026 JetBrains s.r.o. and contributors. Use of this source code is governed by the Apache 2.0 license.
 package org.jetbrains.idea.maven.externalSystemIntegration.output.quickfixes
 
 import com.intellij.build.events.BuildEvent
@@ -11,7 +11,7 @@ import com.intellij.build.output.BuildOutputInstantReader
 import com.intellij.openapi.actionSystem.DataContext
 import com.intellij.openapi.application.EDT
 import com.intellij.openapi.application.readAction
-import com.intellij.openapi.application.writeAction
+import com.intellij.openapi.application.edtWriteAction
 import com.intellij.openapi.command.executeCommand
 import com.intellij.openapi.fileEditor.FileDocumentManager
 import com.intellij.openapi.progress.Cancellation.checkCancelled
@@ -92,12 +92,17 @@ class Maven4ModelVersionErrorParser(
     val virtualFile = VfsUtil.findFile(path, false) ?: return null
     return runBlockingMaybeCancellable {
       readAction {
-        val modelVersion = MavenDomUtil.getMavenDomProjectModel(project, virtualFile)?.modelVersion
-                           ?: return@readAction null
-
-        val value = modelVersion.value ?: return@readAction null
-        val offset = modelVersion.xmlElement?.navigationElement?.textOffset ?: 0
-        return@readAction value to offset
+        val projectModel = MavenDomUtil.getMavenDomProjectModel(project, virtualFile) ?: return@readAction null
+        val modelVersion = projectModel.modelVersion
+        return@readAction if (modelVersion.exists()) {
+          val value = modelVersion.stringValue ?: return@readAction null
+          val offset = modelVersion.xmlElement?.navigationElement?.textOffset ?: 0
+          value to offset
+        }
+        else {
+          val value = projectModel.effectiveModelVersion ?: return@readAction null
+          value to 0
+        }
       }
     }
   }
@@ -271,16 +276,16 @@ class UpdateVersionQuickFix(val path: Path) : BuildIssueQuickFix {
         for (file in filesToUpdate) {
           checkCancelled()
           reporter.text(MavenProjectBundle.message("maven.project.updating.model.updatingFiles", file.parent.name))
-          writeAction {
-            if (!file.isValid()) return@writeAction
+          edtWriteAction {
+            if (!file.isValid()) return@edtWriteAction
             file.refresh(false, false)
             val psiFile = PsiManager.getInstance(project).findFile(file)
-            if (psiFile == null) return@writeAction
-            if (psiFile !is XmlFile) return@writeAction
+            if (psiFile == null) return@edtWriteAction
+            if (psiFile !is XmlFile) return@edtWriteAction
             val documentManager = PsiDocumentManager.getInstance(project)
-            val document = documentManager.getDocument(psiFile) ?: return@writeAction
+            val document = documentManager.getDocument(psiFile) ?: return@edtWriteAction
 
-            val model = MavenDomUtil.getMavenDomModel(psiFile, MavenDomProjectModel::class.java) ?: return@writeAction
+            val model = MavenDomUtil.getMavenDomModel(psiFile, MavenDomProjectModel::class.java) ?: return@edtWriteAction
             val modelVersion = model.modelVersion
             executeCommand(project, MavenProjectBundle.message("maven.project.updating.model.command.name")) {
               if (modelVersion.exists()) {

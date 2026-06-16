@@ -2,7 +2,6 @@
 package git4idea.rebase.interactive
 
 import com.intellij.openapi.components.service
-import com.intellij.openapi.progress.EmptyProgressIndicator
 import com.intellij.openapi.ui.DialogWrapper
 import com.intellij.vcs.log.VcsCommitMetadata
 import com.intellij.vcs.log.data.VcsLogData
@@ -17,6 +16,7 @@ import git4idea.rebase.interactive.dialog.GitInteractiveRebaseDialog
 import git4idea.rebase.log.GetEntriesUsingLogResult
 import git4idea.rebase.log.GitInteractiveRebaseEntriesProvider
 import git4idea.test.GitSingleRepoTest
+import git4idea.test.runUnderProgress
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancelAndJoin
@@ -173,15 +173,18 @@ class GitInteractiveRebaseUsingLogTest : GitSingleRepoTest() {
     updateChangeListManager()
 
     val params = GitRebaseParams.editCommits(repo.vcs.version, commit.parents.first().asString(), editorHandler, false)
-    GitRebaseUtils.rebase(repo.project, listOf(repo), params, EmptyProgressIndicator())
+    runUnderProgress { indicator ->
+      GitRebaseUtils.rebase(repo.project, listOf(repo), params, indicator)
+    }
     return entriesGeneratedUsingGit
   }
 
   private fun checkEntriesGeneration(commit: VcsCommitMetadata) {
     logData.refreshAndWait(repo, true)
     val entriesGeneratedUsingLog = runBlocking {
-      repo.project.service<GitInteractiveRebaseEntriesProvider>().getEntriesUsingLog(repo, commit, logData) as GetEntriesUsingLogResult.Success
-    }.entries
+      repo.project.service<GitInteractiveRebaseEntriesProvider>()
+        .tryGetEntriesForDialog(repo, commit, logData)
+    } ?: error("Failed to get entries")
     val entriesGeneratedUsingGit = getRebaseEntriesUsingGit(commit)
     assertTrue(entriesGeneratedUsingGit.isNotEmpty() && entriesGeneratedUsingLog.isNotEmpty())
     entriesGeneratedUsingLog.forEachIndexed { i, generatedEntry ->
@@ -202,7 +205,7 @@ class GitInteractiveRebaseUsingLogTest : GitSingleRepoTest() {
   ) {
     logData.refreshAndWait(repo, true)
     val result = runBlocking {
-      repo.project.service<GitInteractiveRebaseEntriesProvider>().getEntriesUsingLog(repo, commit, logData)
+      repo.project.service<GitInteractiveRebaseEntriesProvider>().getEntriesForDialog(repo, commit, logData)
     }
 
     when (result) {

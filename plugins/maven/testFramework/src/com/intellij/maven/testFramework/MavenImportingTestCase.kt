@@ -1,10 +1,9 @@
-// Copyright 2000-2023 JetBrains s.r.o. and contributors. Use of this source code is governed by the Apache 2.0 license.
+// Copyright 2000-2026 JetBrains s.r.o. and contributors. Use of this source code is governed by the Apache 2.0 license.
 package com.intellij.maven.testFramework
 
 import com.intellij.application.options.CodeStyle
 import com.intellij.compiler.CompilerConfiguration
 import com.intellij.java.library.LibraryWithMavenCoordinatesProperties
-import com.intellij.java.testFramework.backend.CompilerTestUtil
 import com.intellij.openapi.Disposable
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.application.EDT
@@ -48,12 +47,12 @@ import com.intellij.openapi.util.registry.Registry
 import com.intellij.openapi.vfs.VirtualFile
 import com.intellij.openapi.vfs.VirtualFileManager
 import com.intellij.openapi.vfs.newvfs.impl.VfsRootAccess
-import com.intellij.platform.backend.observation.Observation
 import com.intellij.platform.util.progress.RawProgressReporter
 import com.intellij.pom.java.LanguageLevel
 import com.intellij.psi.codeStyle.CodeStyleSchemes
 import com.intellij.psi.codeStyle.CodeStyleSettings
 import com.intellij.testFramework.CodeStyleSettingsTracker
+import com.intellij.testFramework.CompilerBuildTestUtil
 import com.intellij.testFramework.IdeaTestUtil
 import com.intellij.testFramework.IndexingTestUtil
 import com.intellij.testFramework.PlatformTestUtil
@@ -86,12 +85,14 @@ import org.jetbrains.idea.maven.server.MavenServerManager
 import org.jetbrains.idea.maven.utils.MavenLog
 import org.jetbrains.idea.maven.utils.MavenUtil
 import org.jetbrains.jps.model.library.JpsMavenRepositoryLibraryDescriptor
+import java.nio.charset.StandardCharsets
+import java.nio.file.Files
 import java.nio.file.Path
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Semaphore
 import java.util.concurrent.TimeUnit
-import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
+import kotlin.io.path.absolutePathString
 
 abstract class MavenImportingTestCase : MavenTestCase() {
 
@@ -101,10 +102,91 @@ abstract class MavenImportingTestCase : MavenTestCase() {
   private var myProjectTracker: AutoImportProjectTracker? = null
   private var isAutoReloadEnabled = false
   protected lateinit var myDisposable: Disposable
+  private var myProjectPom: VirtualFile? = null
+  private val myAllPoms: MutableSet<VirtualFile> = mutableSetOf()
 
   // plugin resolution is slow and many tests do not need it
   protected open fun skipPluginResolution(): Boolean {
     return true
+  }
+
+  var projectPom: VirtualFile
+    get() = myProjectPom!!
+    set(projectPom) {
+      myProjectPom = projectPom
+    }
+
+  fun addPom(pom: VirtualFile) {
+    myAllPoms.add(pom)
+  }
+
+  protected fun createProjectPom(
+    @Language(value = "XML", prefix = "<project>", suffix = "</project>") xml: String,
+    omitModelVersionTag: Boolean = false,
+  ): VirtualFile {
+    return createPomFile(projectRoot, xml, omitModelVersionTag).also { myProjectPom = it }
+  }
+
+  protected fun updateProjectPom(@Language(value = "XML", prefix = "<project>", suffix = "</project>") xml: String): VirtualFile {
+    val pom = createProjectPom(xml)
+    refreshFiles(listOf(pom))
+    return pom
+  }
+
+  protected fun createPomFile(
+    dir: VirtualFile, fileName: String = "pom.xml",
+    @Language(value = "XML", prefix = "<project>", suffix = "</project>") xml: String,
+    omitModelVersionTag: Boolean = false,
+  ): VirtualFile {
+    val filePath = Path.of(dir.path, fileName)
+    setPomContent(filePath, xml, omitModelVersionTag)
+    dir.refresh(false, false)
+    val f = dir.findChild(fileName) ?: throw AssertionError("can't find file ${filePath.absolutePathString()} in VFS")
+    myAllPoms.add(f)
+    refreshFiles(listOf(f))
+    return f
+  }
+
+  protected fun setRawPomFile(content: String) {
+    Files.write(projectPath.resolve("pom.xml"), content.toByteArray(StandardCharsets.UTF_8))
+    projectRoot.refresh(false, false)
+    val f = projectRoot.findChild("pom.xml") ?: throw AssertionError("can't find pom.xml in vfs")
+    myProjectPom = f
+    refreshFiles(listOf(f))
+  }
+
+  protected fun createPomFile(
+    dir: VirtualFile,
+    @Language(value = "XML", prefix = "<project>", suffix = "</project>") xml: String,
+    omitModelVersionTag: Boolean = false,
+  ): VirtualFile {
+    return createPomFile(dir, "pom.xml", xml, omitModelVersionTag)
+  }
+
+  private fun setPomContent(
+    file: Path,
+    @Language(value = "XML", prefix = "<project>", suffix = "</project>") xml: String?,
+    omitModelVersionTag: Boolean = false,
+  ) {
+    setFileContent(file, createPomXml(xml, omitModelVersionTag))
+  }
+
+  protected fun createModulePom(
+    relativePath: String,
+    @Language(value = "XML", prefix = "<project>", suffix = "</project>") xml: String,
+    omitModelVersionTag: Boolean = false,
+  ): VirtualFile {
+    return createPomFile(createProjectSubDir(relativePath), xml, omitModelVersionTag)
+  }
+
+  protected fun updateModulePom(
+    relativePath: String,
+    @Language(value = "XML", prefix = "<project>", suffix = "</project>") xml: String,
+    omitModelVersionTag: Boolean = false,
+  ): VirtualFile {
+    val pom = createModulePom(relativePath, xml, omitModelVersionTag)
+    refreshFiles(listOf(pom))
+    return pom
   }
 
   @Throws(Exception::class)
@@ -135,8 +217,14 @@ abstract class MavenImportingTestCase : MavenTestCase() {
     }
     myNotificationAware = AutoImportProjectNotificationAware.getInstance(project)
     myProjectTracker = AutoImportProjectTracker.getInstance(project)
+    if (initProjectManager()) {
+      projectsManager.initForTests()
+    }
+
     project.messageBus.connect(testRootDisposable).subscribe(MavenImportListener.TOPIC, MavenImportLoggingListener())
   }
+
+  protected open fun initProjectManager(): Boolean = true
 
   @Throws(Exception::class)
   override fun tearDown() {
@@ -151,7 +239,7 @@ abstract class MavenImportingTestCase : MavenTestCase() {
       ThrowableRunnable<Throwable> { removeFromLocalRepository("test") },
       ThrowableRunnable<Throwable> {
         ProgressManager.getInstance().runProcess({
-                                                   CompilerTestUtil.deleteBuildSystemDirectory(project)
+                                                   CompilerBuildTestUtil.deleteBuildSystemDirectory(project)
                                                  }, EmptyProgressIndicator())
 
       },
@@ -382,13 +470,19 @@ abstract class MavenImportingTestCase : MavenTestCase() {
 
   @Obsolete
   // use importProjectAsync(String)
-  protected open fun importProject(@Language(value = "XML", prefix = "<project>", suffix = "</project>") xml: String) {
-    createProjectPom(xml)
+  protected open fun importProject(
+    @Language(value = "XML", prefix = "<project>", suffix = "</project>") xml: String,
+    omitModelVersionTag: Boolean = false,
+  ) {
+    createProjectPom(xml, omitModelVersionTag)
     importProject()
   }
 
-  protected suspend fun importProjectAsync(@Language(value = "XML", prefix = "<project>", suffix = "</project>") xml: String) {
-    createProjectPom(xml)
+  protected suspend fun importProjectAsync(
+    @Language(value = "XML", prefix = "<project>", suffix = "</project>") xml: String,
+    omitModelVersionTag: Boolean = false,
+  ) {
+    createProjectPom(xml, omitModelVersionTag)
     importProjectAsync()
   }
 
@@ -443,7 +537,8 @@ abstract class MavenImportingTestCase : MavenTestCase() {
   private fun doImportProjects(files: List<VirtualFile>, failOnReadingError: Boolean, vararg profiles: String) {
     assertFalse(ApplicationManager.getApplication().isWriteAccessAllowed())
     initProjectsManager(false)
-    projectsManager.projectsTree.resetManagedFilesAndProfiles(files, MavenExplicitProfiles(profiles.toList(), emptyList()))
+    projectsManager.state.originalFiles = files.map { it.path }
+    projectsManager.explicitProfiles = MavenExplicitProfiles(profiles.toList(), emptyList())
     runBlockingMaybeCancellable { updateAllProjects() }
     if (failOnReadingError) {
       for (each in projectsManager.getProjectsTree().projects) {
@@ -464,7 +559,8 @@ abstract class MavenImportingTestCase : MavenTestCase() {
   ) {
     assertFalse(ApplicationManager.getApplication().isWriteAccessAllowed())
     initProjectsManager(false)
-    projectsManager.projectsTree.resetManagedFilesAndProfiles(files, MavenExplicitProfiles(profiles.toList(), disabledProfiles))
+    projectsManager.state.originalFiles = files.map { it.path }
+    projectsManager.explicitProfiles = MavenExplicitProfiles(profiles.toList(), disabledProfiles)
     updateAllProjects()
     if (failOnReadingError) {
       for (each in projectsManager.getProjectsTree().projects) {
@@ -519,22 +615,6 @@ abstract class MavenImportingTestCase : MavenTestCase() {
     assertNoPendingProjectForReload()
   }
 
-  @RequiresBackgroundThread
-  protected suspend fun awaitConfiguration() {
-    val isEdt = ApplicationManager.getApplication().isDispatchThread
-    if (isEdt) {
-      MavenLog.LOG.warn("Calling awaitConfiguration() from EDT sometimes causes deadlocks, even though it shouldn't")
-    }
-    assertFalse("Call awaitConfiguration() from background thread", isEdt)
-    Observation.awaitConfiguration(project) { message ->
-      logConfigurationMessage(message)
-    }
-  }
-
-  private fun logConfigurationMessage(message: String) {
-    if (message.contains("scanning")) return
-    MavenLog.LOG.warn(message)
-  }
 
   protected suspend fun updateAllProjects() {
     projectsManager.updateAllMavenProjects(MavenSyncSpec.incremental("MavenImportingTestCase incremental sync"))
@@ -621,52 +701,6 @@ abstract class MavenImportingTestCase : MavenTestCase() {
     }
   }
 
-  @RequiresBackgroundThread
-  protected suspend fun waitForImportWithinTimeout(action: suspend () -> Unit) {
-    MavenLog.LOG.warn("waitForImportWithinTimeout started")
-    val importStarted = AtomicBoolean(false)
-    val importFinished = AtomicBoolean(false)
-    val pluginResolutionFinished = AtomicBoolean(true)
-    val artifactDownloadingFinished = AtomicBoolean(true)
-    project.messageBus.connect(testRootDisposable)
-      .subscribe(MavenImportListener.TOPIC, object : MavenImportListener {
-        override fun importStarted() {
-          importStarted.set(true)
-        }
-
-        override fun importFinished(importedProjects: MutableCollection<MavenProject>, newModules: MutableList<Module>) {
-          if (importStarted.get()) {
-            importFinished.set(true)
-          }
-        }
-
-        override fun pluginResolutionStarted() {
-          pluginResolutionFinished.set(false)
-        }
-
-        override fun pluginResolutionFinished() {
-          pluginResolutionFinished.set(true)
-        }
-
-        override fun artifactDownloadingStarted() {
-          artifactDownloadingFinished.set(false)
-        }
-
-        override fun artifactDownloadingFinished() {
-          artifactDownloadingFinished.set(true)
-        }
-      })
-
-    action()
-
-    awaitConfiguration()
-
-    assertTrue("Import failed: start", importStarted.get())
-    assertTrue("Import failed: finish", importFinished.get())
-    assertTrue("Import failed: plugins", pluginResolutionFinished.get())
-    assertTrue("Import failed: artifacts", artifactDownloadingFinished.get())
-    MavenLog.LOG.warn("waitForImportWithinTimeout finished")
-  }
 
   private class MavenImportLoggingListener : MavenImportListener {
     private val logCounts = ConcurrentHashMap<String, Int>()
@@ -778,4 +812,3 @@ abstract class MavenImportingTestCase : MavenTestCase() {
   private val projectWithMavenNotificationExists: Boolean
     get() = myNotificationAware.getProjectsWithNotification().any { it.systemId == MavenUtil.SYSTEM_ID }
 }
-

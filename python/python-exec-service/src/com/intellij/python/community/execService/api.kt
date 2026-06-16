@@ -1,6 +1,7 @@
 // Copyright 2000-2025 JetBrains s.r.o. and contributors. Use of this source code is governed by the Apache 2.0 license.
 package com.intellij.python.community.execService
 
+import com.intellij.execution.configurations.GeneralCommandLine
 import com.intellij.execution.process.AnsiEscapeDecoder
 import com.intellij.execution.process.ProcessOutputTypes
 import com.intellij.execution.target.FullPathOnTarget
@@ -31,6 +32,12 @@ import java.util.concurrent.CopyOnWriteArrayList
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.minutes
 
+/**
+ * A relative path on the target filesystem.
+ * Unlike [FullPathOnTarget], this represents a path relative to a working directory.
+ */
+typealias RelativePathOnTarget = String
+
 
 /**
  * Default service implementation
@@ -54,8 +61,8 @@ data class BinOnEel(val path: Path, internal val workDir: Path? = null) : Binary
  * Legacy Targets-based approach. Do not use it, unless you know what you are doing
  * if [target] "local" target is used
  */
-data class BinOnTarget(internal val configureTargetCmdLine: (TargetedCommandLineBuilder) -> Unit, val target: TargetEnvironmentConfiguration) : BinaryToExec {
-  constructor(exePath: FullPathOnTarget, target: TargetEnvironmentConfiguration) : this({ it.setExePath(exePath) }, target)
+data class BinOnTarget(internal val configureTargetCmdLine: (TargetedCommandLineBuilder) -> Unit, val target: TargetEnvironmentConfiguration, val workingDir: Path? = null) : BinaryToExec {
+  constructor(exePath: FullPathOnTarget, target: TargetEnvironmentConfiguration, workingDir: Path? = null) : this({ it.setExePath(exePath) }, target, workingDir)
 
   @RequiresBackgroundThread
   fun getLocalExePath(): Lazy<FullPathOnTarget> = lazy {
@@ -232,11 +239,23 @@ enum class ConcurrentProcessWeight {
 }
 
 /**
+ * Configuration for downloading files after command execution.
+ * Uses existing upload volume mappings (from web deployment).
+ *
+ * @param relativePaths Relative paths to download from the working directory.
+ *                      Empty list means download entire working directory.
+ */
+data class DownloadConfig(
+  val relativePaths: List<RelativePathOnTarget> = emptyList(),
+)
+
+/**
  * @property[env] Environment variables to be applied with the process run
  * @property[timeout] Process gets killed after this timeout
  * @property[processDescription] optional description to be displayed to user
  * @property[tty] Much like [com.intellij.platform.eel.EelExecApi.Pty]
  * @property[weight] use it to limit the number of concurrent processes not to exhaust user resources, see [ConcurrentProcessWeight]
+ * @property[downloadAfterExecution] configuration for downloading files after command execution (Target-based execution only)
  */
 data class ExecOptions(
   override val env: Map<String, String> = emptyMap(),
@@ -244,6 +263,7 @@ data class ExecOptions(
   val timeout: Duration = 5.minutes,
   override val tty: TtySize? = null,
   val weight: ConcurrentProcessWeight = ConcurrentProcessWeight.LIGHT,
+  val downloadAfterExecution: DownloadConfig? = null,
 ) : ExecOptionsBase
 
 
@@ -312,4 +332,10 @@ class Args(vararg initialArgs: String) {
         is Arg.FileArg -> it.generator.generateArg(mapFileToRemote(it.file))
       }
     }
+}
+
+
+fun BinaryToExec.asGeneralCommandLine(): PyResult<GeneralCommandLine> = when (this) {
+  is BinOnEel -> PyResult.success(GeneralCommandLine(path.toString()).withWorkingDirectory(workDir))
+  is BinOnTarget -> PyResult.localizedError(message("py.exec.target.binaries.are.not.supported"))
 }

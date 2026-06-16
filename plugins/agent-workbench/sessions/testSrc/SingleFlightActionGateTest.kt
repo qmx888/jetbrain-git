@@ -1,6 +1,8 @@
 // Copyright 2000-2026 JetBrains s.r.o. and contributors. Use of this source code is governed by the Apache 2.0 license.
 package com.intellij.agent.workbench.sessions
 
+import com.intellij.agent.workbench.sessions.util.SingleFlightActionGate
+import com.intellij.agent.workbench.sessions.util.SingleFlightPolicy
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -9,12 +11,15 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.runBlocking
 import org.assertj.core.api.Assertions.assertThat
 import org.junit.jupiter.api.Test
+import org.junit.jupiter.api.Timeout
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
 
+@Timeout(value = 2, unit = TimeUnit.MINUTES)
 class SingleFlightActionGateTest {
   @Test
   fun dropSkipsDuplicateActionWhileKeyIsInFlight() {
-    runBlocking {
+    runBlocking(Dispatchers.Default) {
       val gate = SingleFlightActionGate()
       @Suppress("RAW_SCOPE_CREATION")
       val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
@@ -52,7 +57,7 @@ class SingleFlightActionGateTest {
 
   @Test
   fun dropAllowsDifferentKeysToRunConcurrently() {
-    runBlocking {
+    runBlocking(Dispatchers.Default) {
       val gate = SingleFlightActionGate()
       @Suppress("RAW_SCOPE_CREATION")
       val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
@@ -89,7 +94,7 @@ class SingleFlightActionGateTest {
 
   @Test
   fun dropReleasesKeyAfterCancellation() {
-    runBlocking {
+    runBlocking(Dispatchers.Default) {
       val gate = SingleFlightActionGate()
       @Suppress("RAW_SCOPE_CREATION")
       val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
@@ -119,7 +124,7 @@ class SingleFlightActionGateTest {
 
   @Test
   fun restartLatestRunsOnlyMostRecentPendingAction() {
-    runBlocking {
+    runBlocking(Dispatchers.Default) {
       val gate = SingleFlightActionGate()
       @Suppress("RAW_SCOPE_CREATION")
       val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
@@ -159,8 +164,86 @@ class SingleFlightActionGateTest {
   }
 
   @Test
+  fun mixedPolicyDropThenRestartLatestKeepsDropSemantics() {
+    runBlocking(Dispatchers.Default) {
+      val gate = SingleFlightActionGate()
+      @Suppress("RAW_SCOPE_CREATION")
+      val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+      val release = CompletableDeferred<Unit>()
+      val started = CompletableDeferred<Unit>()
+      val runs = mutableListOf<String>()
+
+      try {
+        val first = gate.launch(scope = scope, key = "open:thread-1", policy = SingleFlightPolicy.DROP) {
+          started.complete(Unit)
+          runs += "first"
+          release.await()
+        }
+        started.await()
+
+        val second = gate.launch(scope = scope, key = "open:thread-1", policy = SingleFlightPolicy.RESTART_LATEST) {
+          runs += "second"
+        }
+
+        assertThat(first).isNotNull()
+        assertThat(second).isNull()
+
+        release.complete(Unit)
+        first?.join()
+
+        assertThat(runs).containsExactly("first")
+        assertThat(gate.isInFlight("open:thread-1")).isFalse()
+      }
+      finally {
+        scope.cancel()
+      }
+    }
+  }
+
+  @Test
+  fun mixedPolicyRestartLatestThenDropStillRunsRestartLatestPendingAction() {
+    runBlocking(Dispatchers.Default) {
+      val gate = SingleFlightActionGate()
+      @Suppress("RAW_SCOPE_CREATION")
+      val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+      val release = CompletableDeferred<Unit>()
+      val started = CompletableDeferred<Unit>()
+      val runs = mutableListOf<String>()
+
+      try {
+        val first = gate.launch(scope = scope, key = "open:thread-1", policy = SingleFlightPolicy.RESTART_LATEST) {
+          started.complete(Unit)
+          runs += "first"
+          release.await()
+        }
+        started.await()
+
+        val second = gate.launch(scope = scope, key = "open:thread-1", policy = SingleFlightPolicy.DROP) {
+          runs += "second"
+        }
+        val third = gate.launch(scope = scope, key = "open:thread-1", policy = SingleFlightPolicy.RESTART_LATEST) {
+          runs += "third"
+        }
+
+        assertThat(first).isNotNull()
+        assertThat(second).isNull()
+        assertThat(third).isNull()
+
+        release.complete(Unit)
+        first?.join()
+
+        assertThat(runs).containsExactly("first", "third")
+        assertThat(gate.isInFlight("open:thread-1")).isFalse()
+      }
+      finally {
+        scope.cancel()
+      }
+    }
+  }
+
+  @Test
   fun queueRunsPendingActionsInOrder() {
-    runBlocking {
+    runBlocking(Dispatchers.Default) {
       val gate = SingleFlightActionGate()
       @Suppress("RAW_SCOPE_CREATION")
       val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)

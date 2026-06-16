@@ -3,7 +3,6 @@
 package org.jetbrains.kotlin.idea.fir.completion;
 
 import com.intellij.testFramework.TestDataPath;
-import org.jetbrains.kotlin.idea.base.plugin.KotlinPluginMode;
 import org.jetbrains.kotlin.idea.base.test.TestRoot;
 import org.jetbrains.kotlin.idea.test.JUnit3RunnerWithInners;
 import org.jetbrains.kotlin.idea.test.KotlinTestUtils;
@@ -20,12 +19,6 @@ import org.junit.runner.RunWith;
 @RunWith(JUnit3RunnerWithInners.class)
 @TestMetadata("../../completion/testData/smartMultiFile")
 public class HighLevelMultiFileSmartCompletionTestGenerated extends AbstractHighLevelMultiFileSmartCompletionTest {
-    @java.lang.Override
-    @org.jetbrains.annotations.NotNull
-    public final KotlinPluginMode getPluginMode() {
-        return KotlinPluginMode.K2;
-    }
-
     private void runTest(String testDataFilePath) throws Exception {
         KotlinTestUtils.runTest(this::doTest, this, testDataFilePath);
     }
@@ -33,6 +26,11 @@ public class HighLevelMultiFileSmartCompletionTestGenerated extends AbstractHigh
     @TestMetadata("AnonymousObjectGenericJava")
     public void testAnonymousObjectGenericJava() throws Exception {
         runTest("../../completion/testData/smartMultiFile/AnonymousObjectGenericJava/");
+    }
+
+    @TestMetadata("AnonymousObjectGenericJavaSubClass")
+    public void testAnonymousObjectGenericJavaSubClass() throws Exception {
+        runTest("../../completion/testData/smartMultiFile/AnonymousObjectGenericJavaSubClass/");
     }
 
     @TestMetadata("CallableReferenceNotImported")
@@ -43,6 +41,26 @@ public class HighLevelMultiFileSmartCompletionTestGenerated extends AbstractHigh
     @TestMetadata("CallablesInExcludedPackage")
     public void testCallablesInExcludedPackage() throws Exception {
         runTest("../../completion/testData/smartMultiFile/CallablesInExcludedPackage/");
+    }
+
+    @TestMetadata("FlexibleType")
+    public void testFlexibleType() throws Exception {
+        runTest("../../completion/testData/smartMultiFile/FlexibleType/");
+    }
+
+    @TestMetadata("FlexibleTypeMultipleArguments")
+    public void testFlexibleTypeMultipleArguments() throws Exception {
+        runTest("../../completion/testData/smartMultiFile/FlexibleTypeMultipleArguments/");
+    }
+
+    @TestMetadata("FlexibleTypeMultipleArgumentsNullable")
+    public void testFlexibleTypeMultipleArgumentsNullable() throws Exception {
+        runTest("../../completion/testData/smartMultiFile/FlexibleTypeMultipleArgumentsNullable/");
+    }
+
+    @TestMetadata("FlexibleTypeNotNull")
+    public void testFlexibleTypeNotNull() throws Exception {
+        runTest("../../completion/testData/smartMultiFile/FlexibleTypeNotNull/");
     }
 
     @TestMetadata("FunctionFromAnotherPackage")
@@ -68,6 +86,16 @@ public class HighLevelMultiFileSmartCompletionTestGenerated extends AbstractHigh
     @TestMetadata("GenericInheritors4")
     public void testGenericInheritors4() throws Exception {
         runTest("../../completion/testData/smartMultiFile/GenericInheritors4/");
+    }
+
+    @TestMetadata("HideNestedPrivateObject")
+    public void testHideNestedPrivateObject() throws Exception {
+        runTest("../../completion/testData/smartMultiFile/HideNestedPrivateObject/");
+    }
+
+    @TestMetadata("HidePrivateObject")
+    public void testHidePrivateObject() throws Exception {
+        runTest("../../completion/testData/smartMultiFile/HidePrivateObject/");
     }
 
     @TestMetadata("InheritorInTheSameFile")
@@ -123,6 +151,11 @@ public class HighLevelMultiFileSmartCompletionTestGenerated extends AbstractHigh
     @TestMetadata("NotImportedGetValue")
     public void testNotImportedGetValue() throws Exception {
         runTest("../../completion/testData/smartMultiFile/NotImportedGetValue/");
+    }
+
+    @TestMetadata("ShowElementsFromIndexWithoutPrefix")
+    public void testShowElementsFromIndexWithoutPrefix() throws Exception {
+        runTest("../../completion/testData/smartMultiFile/ShowElementsFromIndexWithoutPrefix/");
     }
 
     @TestMetadata("StaticMembers1")

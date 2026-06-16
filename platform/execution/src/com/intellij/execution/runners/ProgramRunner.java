@@ -14,6 +14,7 @@ import com.intellij.execution.ui.RunContentDescriptor;
 import com.intellij.openapi.extensions.ExtensionPointName;
 import com.intellij.openapi.options.SettingsEditor;
 import com.intellij.openapi.util.NlsActions;
+import org.jetbrains.annotations.ApiStatus;
 import org.jetbrains.annotations.NonNls;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
@@ -41,7 +42,7 @@ public interface ProgramRunner<Settings extends RunnerSettings> {
     /**
      * @deprecated Use {@link #processNotStarted(Throwable)}
      */
-    @Deprecated
+    @Deprecated(forRemoval = true)
     default void processNotStarted() {}
 
     default void processNotStarted(@Nullable Throwable error) {
@@ -94,7 +95,7 @@ public interface ProgramRunner<Settings extends RunnerSettings> {
    * @deprecated Not used by platform.
    */
   @SuppressWarnings("unused")
-  @Deprecated
+  @Deprecated(forRemoval = true)
   default void onProcessStarted(RunnerSettings settings, ExecutionResult executionResult) {
   }
 
@@ -103,6 +104,19 @@ public interface ProgramRunner<Settings extends RunnerSettings> {
   }
 
   default @Nullable SettingsEditor<Settings> getSettingsEditor(Executor executor, RunConfiguration configuration) {
+    return null;
+  }
+
+  /**
+   * Returns the ID of the tool window where run content produced by this runner should be displayed.
+   * When non-null, this value takes priority over the executor's default tool window
+   * and the Services dashboard when resolving the target tool window in
+   * {@link com.intellij.execution.ui.RunContentManager#getContentDescriptorToolWindowId(ExecutionEnvironment)}.
+   *
+   * @return tool window ID, or {@code null} to use the default resolution logic.
+   */
+  @ApiStatus.Internal
+  default @Nullable String getContentToolWindowId(@NotNull ExecutionEnvironment environment) {
     return null;
   }
 

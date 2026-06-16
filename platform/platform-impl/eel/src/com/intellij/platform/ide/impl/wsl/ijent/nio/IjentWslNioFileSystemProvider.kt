@@ -1,4 +1,4 @@
-// Copyright 2000-2025 JetBrains s.r.o. and contributors. Use of this source code is governed by the Apache 2.0 license.
+// Copyright 2000-2026 JetBrains s.r.o. and contributors. Use of this source code is governed by the Apache 2.0 license.
 package com.intellij.platform.ide.impl.wsl.ijent.nio
 
 import com.intellij.execution.wsl.WslDistributionManager
@@ -6,12 +6,14 @@ import com.intellij.execution.wsl.WslPath
 import com.intellij.openapi.diagnostic.logger
 import com.intellij.openapi.util.NlsSafe
 import com.intellij.platform.core.nio.fs.RoutingAwareFileSystemProvider
-import com.intellij.platform.eel.provider.utils.EelPathUtils
+import com.intellij.platform.eel.EelDescriptor
+import com.intellij.platform.eel.channels.EelDelicateApi
+import com.intellij.platform.eel.provider.utils.impl.localToIjent
+import com.intellij.platform.eel.provider.utils.EelPathTransfer
 import com.intellij.platform.ijent.community.impl.nio.IjentNioPath
 import com.intellij.platform.ijent.community.impl.nio.fs.getCachedFileAttributesAndWrapToDosAttributesAdapter
 import com.intellij.platform.ijent.community.impl.nio.fs.getFileAttributeViewUsingDosAttributesAdapter
 import com.intellij.platform.ijent.community.impl.nio.fs.readAttributesUsingDosAttributesAdapter
-import com.intellij.util.io.sanitizeFileName
 import org.jetbrains.annotations.ApiStatus
 import java.io.IOException
 import java.io.InputStream
@@ -55,11 +57,11 @@ import kotlin.io.path.ExperimentalPathApi
  * Nevertheless, in case when this filesystem should be accessed directly,
  * an instance of [IjentWslNioFileSystem] can be obtained with a URL like "ijent://wsl/distribution-name".
  */
-@ApiStatus.Internal
-class IjentWslNioFileSystemProvider(
+internal class IjentWslNioFileSystemProvider(
   val wslId: @NlsSafe String,
   private val ijentFsProvider: FileSystemProvider,
   internal val originalFsProvider: FileSystemProvider,
+  private val eelDescriptor: EelDescriptor,
 ) : FileSystemProvider(), RoutingAwareFileSystemProvider {
   private val ijentFsUri: URI = URI("ijent", "wsl", "/$wslId", null, null)
   private val originalFs = originalFsProvider.getFileSystem(URI("file:/"))
@@ -81,11 +83,15 @@ class IjentWslNioFileSystemProvider(
       this is IjentWslNioPath -> presentablePath.toIjentPath()
 
       isAbsolute ->
-        fold(ijentFsProvider.getPath(ijentFsUri) as IjentNioPath, { nioPath, newPart -> nioPath.resolve(newPart.toString()) })
+        fold(ijentFsProvider.getPath(ijentFsUri) as IjentNioPath, { nioPath, newPart ->
+          @OptIn(EelDelicateApi::class)
+          nioPath.resolve(localToIjent(newPart.toString ()))
+        })
 
       else -> {
         val ijentNioFs = ijentFsProvider.getFileSystem(ijentFsUri)
-        ijentNioFs.getPath(toString().replace("\\", ijentNioFs.separator)) as IjentNioPath
+        @OptIn(EelDelicateApi::class)
+        ijentNioFs.getPath(localToIjent(toString().replace("\\", ijentNioFs.separator))) as IjentNioPath
       }
     }
 
@@ -132,7 +138,8 @@ class IjentWslNioFileSystemProvider(
         provider = this,
         wslId = wslId,
         ijentFs = ijentFsProvider.getFileSystem(URI("ijent", "wsl", "/$wslId", null, null)),
-        originalFsProvider.getFileSystem(URI("file:/"))
+        originalFs = originalFsProvider.getFileSystem(URI("file:/")),
+        eelDescriptor = eelDescriptor,
       )
     }
   }
@@ -218,7 +225,7 @@ class IjentWslNioFileSystemProvider(
           override fun next(): Path {
             // resolve() can't be used there because WindowsPath.resolve() checks that the other path is WindowsPath.
             val ijentPath = delegateIterator.next().toIjentPath()
-            val originalPath = dir.resolve(sanitizeFileName(ijentPath.fileName.toString()))
+            val originalPath = dir.resolve(ijentPath.fileName.toString())
 
             return IjentWslNioPath(getFileSystem(wslId), originalPath.toOriginalPathWithSameNotation(), ijentPath.getCachedFileAttributesAndWrapToDosAttributesAdapter())
           }
@@ -256,7 +263,7 @@ class IjentWslNioFileSystemProvider(
       }
 
       else -> {
-        EelPathUtils.walkingTransfer(source, target, removeSource = false, copyAttributes = StandardCopyOption.COPY_ATTRIBUTES in options)
+        EelPathTransfer.walkingTransfer(source, target, removeSource = false, copyAttributes = StandardCopyOption.COPY_ATTRIBUTES in options)
       }
     }
   }
@@ -275,7 +282,7 @@ class IjentWslNioFileSystemProvider(
       }
 
       else -> {
-        EelPathUtils.walkingTransfer(source, target, removeSource = true, copyAttributes = StandardCopyOption.COPY_ATTRIBUTES in options)
+        EelPathTransfer.walkingTransfer(source, target, removeSource = true, copyAttributes = StandardCopyOption.COPY_ATTRIBUTES in options)
       }
     }
   }
@@ -326,6 +333,15 @@ class IjentWslNioFileSystemProvider(
 
   override fun setAttribute(path: Path, attribute: String?, value: Any?, vararg options: LinkOption?) {
     ijentFsProvider.setAttribute(path.toIjentPath(), attribute, value, *options)
+  }
+
+  override fun equals(other: Any?): Boolean =
+    this === other ||
+    other is IjentWslNioFileSystemProvider &&
+    wslId == other.wslId
+
+  override fun hashCode(): Int {
+    return wslId.hashCode()
   }
 
   companion object {

@@ -46,7 +46,7 @@ class RuleIntentionTest : BaseTestCase() {
   @NeedsCloud
   @Test
   fun `test newline in the quick fix`() {
-    HighlightingTest.enableLanguages(setOf(Lang.GERMANY_GERMAN), project, testRootDisposable)
+    HighlightingTest.enableLanguages(setOf(Lang.GERMANY_GERMAN), testRootDisposable)
     myFixture.configureByText("a.md", "Beste Weihnachtsg<caret>rüße, Alex")
     myFixture.doHighlighting()
     val intentionTexts = availableIntentions.map { it.text }
@@ -61,6 +61,7 @@ class RuleIntentionTest : BaseTestCase() {
   @NeedsCloud
   @Test
   fun `test rephrase as a quick fix for lemma repetition warnings`() {
+    GrazieTestUtil.registerGrazieCloudConnectorWithQuota(testRootDisposable)
     myFixture.configureByText("a.txt", "I said yes. He said no. Then I <caret>said maybe.")
     myFixture.doHighlighting()
     val intentionTexts = availableIntentions.map { it.text }
@@ -87,6 +88,7 @@ class RuleIntentionTest : BaseTestCase() {
   @NeedsCloud
   @Test
   fun `test rephrase action is available and first`() {
+    GrazieTestUtil.registerGrazieCloudConnectorWithQuota(testRootDisposable)
     HighlightingTest.enableRules("Grazie.RuleEngine.En.Style.LEMMA_REPETITION")
     myFixture.configureByText("a.txt",
       """
@@ -153,7 +155,7 @@ class RuleIntentionTest : BaseTestCase() {
   @NeedsCloud
   @Test
   fun `test use Oxford spelling fix from GB`() {
-    HighlightingTest.enableLanguages(setOf(Lang.BRITISH_ENGLISH), project, testRootDisposable)
+    HighlightingTest.enableLanguages(setOf(Lang.BRITISH_ENGLISH), testRootDisposable)
     assertFalse(GrazieConfig.get().useOxfordSpelling)
 
     myFixture.configureByText("a.txt",

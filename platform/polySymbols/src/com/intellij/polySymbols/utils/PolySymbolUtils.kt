@@ -14,6 +14,7 @@ import com.intellij.openapi.project.Project
 import com.intellij.openapi.util.ModificationTracker
 import com.intellij.platform.backend.navigation.NavigationTarget
 import com.intellij.polySymbols.CompositePolySymbol
+import com.intellij.polySymbols.PolySymbol.HideFromCompletionProperty
 import com.intellij.polySymbols.PolySymbol
 import com.intellij.polySymbols.PolySymbolApiStatus
 import com.intellij.polySymbols.PolySymbolKind
@@ -38,7 +39,7 @@ import com.intellij.polySymbols.query.PolySymbolQueryStack
 import com.intellij.polySymbols.query.PolySymbolScope
 import com.intellij.polySymbols.query.PolySymbolWithPattern
 import com.intellij.polySymbols.query.impl.PolySymbolMatchBase
-import com.intellij.polySymbols.search.PsiSourcedPolySymbol
+import com.intellij.polySymbols.search.PsiLinkedPolySymbol
 import com.intellij.pom.Navigatable
 import com.intellij.psi.PsiElement
 import com.intellij.psi.PsiNamedElement
@@ -282,7 +283,7 @@ internal val PolySymbol.matchedNameOrName: String
   get() = (this as? PolySymbolMatch)?.matchedName ?: name
 
 val PolySymbol.hideFromCompletion: Boolean
-  get() = this[PolySymbol.PROP_HIDE_FROM_COMPLETION] == true
+  get() = this[HideFromCompletionProperty] == true
 
 val (PolySymbolNameSegment.MatchProblem?).isCritical: Boolean
   get() = this == PolySymbolNameSegment.MatchProblem.MISSING_REQUIRED_PART || this == PolySymbolNameSegment.MatchProblem.UNKNOWN_SYMBOL
@@ -419,7 +420,7 @@ fun createModificationTracker(trackersPointers: List<Pointer<out ModificationTra
   }
 
 @ApiStatus.Internal
-fun acceptSymbolForPsiSourcedPolySymbolRenameHandler(symbol: Symbol): Boolean =
-  symbol is PsiSourcedPolySymbol
-  && symbol.source is PsiNamedElement
-  && symbol.source !is SyntheticElement
+fun acceptSymbolForPsiLinkedPolySymbolRenameHandler(symbol: Symbol): Boolean =
+  symbol is PsiLinkedPolySymbol
+  && symbol.linkedElement is PsiNamedElement
+  && symbol.linkedElement !is SyntheticElement

@@ -11,7 +11,7 @@ import com.intellij.platform.eel.EelResult
 import com.intellij.platform.eel.EelTunnelsPosixApi
 import com.intellij.platform.eel.EelUserPosixInfo
 import com.intellij.platform.eel.fs.EelFileSystemApi
-import com.intellij.platform.eel.impl.fs.PosixNioBasedEelFileSystemApi
+import com.intellij.platform.eel.impl.local.PosixNioBasedEelFileSystemApi
 import com.intellij.platform.eel.path.EelPath
 import com.intellij.platform.eel.provider.asEelPath
 import com.intellij.platform.eel.provider.utils.toEelArch
@@ -39,6 +39,8 @@ internal class EelTestPosixApi(override val descriptor: EelTestDescriptor, fileS
       override suspend fun fetchLoginShellEnvVariables(): Map<String, String> = emptyMap()
       override fun environmentVariables(opts: EelExecApi.EnvironmentVariablesOptions): EelExecApi.EnvironmentVariablesDeferred =
         EelExecApi.EnvironmentVariablesDeferred(CompletableDeferred(emptyMap()))
+      override suspend fun getUserLoginShell() = EelPath.parse("/bin/sh", descriptor)
+      override suspend fun spawnLoginShell(opts: EelExecApi.LoginShellOptions) = throw UnsupportedOperationException()
       override suspend fun findExeFilesInPath(binaryName: String) = TODO()
       override suspend fun createExternalCli(options: EelExecApi.ExternalCliOptions): EelExecApi.ExternalCliEntrypoint = TODO()
     }

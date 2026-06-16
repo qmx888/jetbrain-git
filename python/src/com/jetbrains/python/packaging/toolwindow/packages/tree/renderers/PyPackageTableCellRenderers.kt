@@ -3,15 +3,18 @@ package com.jetbrains.python.packaging.toolwindow.packages.tree.renderers
 
 import com.intellij.icons.AllIcons
 import com.intellij.openapi.ui.getUserData
+import com.intellij.ui.AnimatedIcon
 import com.intellij.ui.components.JBLabel
 import com.intellij.util.ui.JBEmptyBorder
 import com.intellij.util.ui.JBUI
 import com.intellij.util.ui.UIUtil
 import com.jetbrains.python.PyBundle
+import com.jetbrains.python.packaging.cache.remainingItemsAfterPageIndex
 import com.jetbrains.python.packaging.toolwindow.model.DisplayablePackage
 import com.jetbrains.python.packaging.toolwindow.model.ExpandResultNode
 import com.jetbrains.python.packaging.toolwindow.model.InstallablePackage
 import com.jetbrains.python.packaging.toolwindow.model.InstalledPackage
+import com.jetbrains.python.packaging.toolwindow.model.LoadingNode
 import com.jetbrains.python.packaging.toolwindow.model.RequirementPackage
 import com.jetbrains.python.packaging.toolwindow.model.WorkspaceMember
 import com.jetbrains.python.packaging.toolwindow.packages.tree.PyPackagesTreeTable
@@ -39,8 +42,20 @@ internal class PackageNameCellRenderer : TableCellRenderer {
     val background = PackageRendererUtils.getBackgroundForState(isSelected)
 
     return when (pkg) {
+      is LoadingNode -> createLoadingNodeComponent(background)
       is ExpandResultNode -> createExpandNodeComponent(pkg, background)
       else -> createNameComponent(pkg, background)
+    }
+  }
+
+  private fun createLoadingNodeComponent(bg: Color): Component {
+    val loadingLabel = JBLabel(PyBundle.message("python.toolwindow.packages.description.panel.loading")).apply {
+      icon = AnimatedIcon.Default.INSTANCE
+      foreground = UIUtil.getInactiveTextColor()
+    }
+    return PackageRendererUtils.createBasicPanel().apply {
+      add(loadingLabel)
+      background = bg
     }
   }
 
@@ -48,7 +63,12 @@ internal class PackageNameCellRenderer : TableCellRenderer {
     node: ExpandResultNode,
     bg: Color,
   ): Component {
-    val expandNodeLabel = JBLabel(PyBundle.message("python.toolwindow.packages.load.more", node.more)).apply {
+    val expandNodeLabel = JBLabel(
+      PyBundle.message(
+        "python.toolwindow.packages.load.more",
+        node.result.remainingItemsAfterPageIndex(node.pageIndex)
+      )
+    ).apply {
       foreground = UIUtil.getContextHelpForeground()
     }
     return PackageRendererUtils.createBasicPanel().apply {
@@ -65,12 +85,12 @@ internal class PackageNameCellRenderer : TableCellRenderer {
     nameLabel.icon = when (pkg) {
       is WorkspaceMember -> AllIcons.Nodes.Module
       is InstalledPackage -> if (pkg.isEditMode) AllIcons.Actions.Edit else null
-      is RequirementPackage, is InstallablePackage, is ExpandResultNode -> null
+      is RequirementPackage, is InstallablePackage, is ExpandResultNode, is LoadingNode -> null
     }
     nameLabel.foreground = when (pkg) {
       is InstalledPackage -> if (!pkg.isDeclared) UIUtil.getInactiveTextColor() else UIUtil.getTreeForeground()
       is RequirementPackage -> if (!pkg.isDeclared) UIUtil.getInactiveTextColor() else UIUtil.getTreeForeground()
-      is WorkspaceMember, is InstallablePackage, is ExpandResultNode -> UIUtil.getTreeForeground()
+      is WorkspaceMember, is InstallablePackage, is ExpandResultNode, is LoadingNode -> UIUtil.getTreeForeground()
     }
     background = bg
   }
@@ -106,6 +126,7 @@ internal class PackageVersionCellRenderer : TableCellRenderer {
     versionPanel.background = background
 
     when (pkg) {
+      is LoadingNode -> {}
       is InstallablePackage -> installablePackageVersionStrategy(versionPanel, treeTable, row, linkLabel)
       is InstalledPackage -> if (!treeTable.isReadOnly && pkg.nextVersion != null && pkg.canBeUpdated) {
         updatableInstalledPackageStrategy(versionPanel, pkg, pkg.nextVersion, treeTable, row, linkLabel)

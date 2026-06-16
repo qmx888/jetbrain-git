@@ -8,6 +8,7 @@ import com.intellij.util.cancelOnDispose
 import com.jetbrains.python.NON_INTERACTIVE_ROOT_TRACE_CONTEXT
 import com.jetbrains.python.packaging.PyPackageVersion
 import com.jetbrains.python.packaging.PyPackageVersionNormalizer
+import com.jetbrains.python.packaging.PyPackagingSettings
 import com.jetbrains.python.packaging.PyRequirement
 import com.jetbrains.python.packaging.common.PythonRepositoryPackageSpecification
 import com.jetbrains.python.packaging.management.PythonRepositoryManager
@@ -36,21 +37,10 @@ abstract class PythonRepositoryManagerBase : PythonRepositoryManager, Disposable
     }
   }
 
-
-  override fun allPackages(): Set<String> {
-    if (repositories.size == 1)
-      return repositories.first().getPackages()
-
-    val result = mutableSetOf<String>()
-    for (repository in repositories) {
-      result.addAll(repository.getPackages())
-    }
-    return result
-  }
-
   override suspend fun getLatestVersion(packageName: String, repository: PyPackageRepository?): PyPackageVersion? {
     waitForInit()
-    val version = getVersions(packageName, repository)?.firstOrNull() ?: return null
+    val versions = getVersions(packageName, repository) ?: return null
+    val version = PyPackagingSettings.getInstance(project).selectLatestVersion(versions) ?: return null
     return PyPackageVersionNormalizer.normalize(version)
   }
 
@@ -62,7 +52,7 @@ abstract class PythonRepositoryManagerBase : PythonRepositoryManager, Disposable
     val found = repositories.firstNotNullOfOrNull { it.findPackageSpecification(requirement) }
     if (found == null) {
       thisLogger().debug("Package specification not found for $requirement. Tried repositories: ${
-        repositories.joinToString(",") { "${it.name}: packages=${it.getPackages().size}" }
+        repositories.joinToString(",") { it.name }
       }")
       return found
     }

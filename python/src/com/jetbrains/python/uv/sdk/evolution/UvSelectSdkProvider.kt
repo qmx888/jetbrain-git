@@ -1,7 +1,7 @@
 package com.jetbrains.python.uv.sdk.evolution
 
 import com.intellij.openapi.ui.popup.ListSeparator
-import com.intellij.python.community.impl.uv.common.icons.PythonCommunityImplUVCommonIcons
+import com.intellij.python.uv.common.icons.PythonUvCommonIcons
 import com.intellij.python.sdk.ui.evolution.AddNewEnvAction
 import com.intellij.python.sdk.ui.evolution.SelectEnvAction
 import com.intellij.python.sdk.ui.evolution.sdk.EvoModuleSdk
@@ -15,16 +15,16 @@ import com.jetbrains.python.PyBundle
 import com.jetbrains.python.Result
 import com.jetbrains.python.errorProcessing.PyResult
 import com.jetbrains.python.sdk.baseDir
-import com.jetbrains.python.sdk.uv.impl.getUvExecutable
+import com.jetbrains.python.sdk.uv.impl.getUvExecutableLocal
 import com.jetbrains.python.venvReader.VirtualEnvReader
 import java.nio.file.Path
 
 
 internal class UvSelectSdkProvider : EvoSelectSdkProvider {
   override fun getTreeElement(evoModuleSdk: EvoModuleSdk): EvoTreeLazyNodeElement {
-    val icon = PythonCommunityImplUVCommonIcons.UV
+    val icon = PythonUvCommonIcons.UV
     return EvoTreeLazyNodeElement("uv", icon) {
-      getUvExecutable() ?: return@EvoTreeLazyNodeElement PyResult.localizedError(PyBundle.message("evolution.uv.executable.is.not.found"))
+      getUvExecutableLocal() ?: return@EvoTreeLazyNodeElement PyResult.localizedError(PyBundle.message("evolution.uv.executable.is.not.found"))
 
       val environments = VenvEvoSdkManager.findEnvironments(evoModuleSdk.module).getOr {
         return@EvoTreeLazyNodeElement it

@@ -6,6 +6,7 @@ import com.intellij.openapi.project.Project
 import com.intellij.openapi.projectRoots.Sdk
 import com.intellij.ui.JBColor
 import com.jetbrains.python.PyBundle.message
+import com.jetbrains.python.packaging.cache.hasMorePagesAfterPageIndex
 import com.jetbrains.python.packaging.repository.InstalledPyPackagedRepository
 import com.jetbrains.python.packaging.repository.PyPackageRepository
 import com.jetbrains.python.packaging.toolwindow.model.DisplayablePackage
@@ -15,6 +16,7 @@ import com.jetbrains.python.packaging.toolwindow.model.PyPackagesViewData
 import com.jetbrains.python.packaging.toolwindow.packages.PyPackagingTreeGroup
 import com.jetbrains.python.packaging.toolwindow.packages.tree.PyPackagesTreeTable
 import com.jetbrains.python.packaging.toolwindow.ui.PyPackagesUiComponents
+import org.jetbrains.annotations.Nls
 import java.awt.Rectangle
 import java.awt.event.ComponentAdapter
 import java.awt.event.ComponentEvent
@@ -63,7 +65,7 @@ internal class PyPackagingTreeView(
 
     val tableToData = repositories.map { repo -> repo to repoData.find { it.repository.name == repo.repositoryName }!! }
     tableToData.forEach { (table, data) ->
-      table.updateHeaderText(data.packages.size + data.moreItems)
+      table.updateHeaderText(data.result.total)
       table.expand()
     }
 
@@ -71,7 +73,7 @@ internal class PyPackagingTreeView(
 
     val exactMatchPackageName = tableToData
       .firstOrNull { (_, data) -> data.exactMatch != -1 }
-      ?.second?.let { data -> data.packages.getOrNull(data.exactMatch)?.name }
+      ?.second?.let { data -> data.displayable.getOrNull(data.exactMatch)?.name }
 
     exactMatchPackageName?.let { packageName ->
       val installedPackageIndex = installedPackages.items.indexOfFirst { it.name == packageName }
@@ -80,6 +82,10 @@ internal class PyPackagingTreeView(
         installedPackages.tree.table.setRowSelectionInterval(installedPackageIndex, installedPackageIndex)
       }
     }
+  }
+
+  fun setSdkName(@Nls sdkName: String?) {
+    installedPackages.setSdkToHeader(sdkName)
   }
 
   fun resetSearch(installed: List<DisplayablePackage>, repoData: List<PyPackagesViewData>, currentSdk: Sdk?) {
@@ -116,11 +122,11 @@ internal class PyPackagingTreeView(
 
   private fun updateValidRepositories(validRepoData: List<PyPackagesViewData>) {
     for (data in validRepoData) {
-      val withExpander = if (data.moreItems > 0) {
-        data.packages + listOf(ExpandResultNode(data.moreItems, data.repository))
+      val withExpander = if (data.result.hasMorePagesAfterPageIndex(data.pageIndex)) {
+        data.displayable + ExpandResultNode(data.repository, data.result, data.pageIndex)
       }
       else {
-        data.packages
+        data.displayable
       }
 
       val existingRepo = findTableForRepo(data.repository)
@@ -200,6 +206,10 @@ internal class PyPackagingTreeView(
   fun getSelectedPackages(): List<DisplayablePackage> {
     val repos = getRepos()
     return repos.flatMap { it.tree.selectedItems() }
+  }
+
+  fun setInstalledLoading(loading: Boolean) {
+    installedPackages.setLoading(loading)
   }
 
   fun collapseAll() {

@@ -13,7 +13,9 @@ import git4idea.repo.getAndInit
 import git4idea.test.GitSingleRepoTest
 import git4idea.test.branch
 import git4idea.test.registerRepo
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withContext
 import java.nio.file.Path
 import java.nio.file.Paths
 
@@ -25,7 +27,7 @@ internal abstract class GitWorkingTreeTestBase : GitSingleRepoTest() {
   protected fun doTestWorkingTreeCreation(
     data: GitWorkingTreeDialogData,
     expectedWorkingTree: GitWorkingTree,
-    expectedWorkingTreeBranchName: String,
+    expectedWorkingTreeBranchName: String?,
     expectedWorkingTreeLastCommit: String,
   ) {
     val holder = GitRepositoriesHolder.getAndInit(project)
@@ -70,7 +72,9 @@ internal abstract class GitWorkingTreeTestBase : GitSingleRepoTest() {
 
     fun GitRepository.ensureWorkingTreesUpToDateForTests() {
       runBlocking {
-        (workingTreeHolder as GitWorkingTreeHolderImpl).updateState()
+        withContext(Dispatchers.IO) {
+          (workingTreeHolder as GitWorkingTreeHolderImpl).updateState()
+        }
       }
     }
   }

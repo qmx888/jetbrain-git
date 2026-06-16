@@ -50,7 +50,6 @@ import org.jetbrains.kotlin.idea.debugger.coroutine.util.XDebugSessionListenerPr
 import org.jetbrains.kotlin.idea.debugger.coroutine.util.logger
 import java.awt.BorderLayout
 import javax.swing.JPanel
-import javax.swing.tree.TreePath
 
 internal class CoroutineView(project: Project, javaDebugProcess: JavaDebugProcess) :
     Disposable, XDebugSessionListenerProvider, CreateContentParamsProvider {
@@ -87,6 +86,7 @@ internal class CoroutineView(project: Project, javaDebugProcess: JavaDebugProces
         threadsPanel.add(combobox, BorderLayout.CENTER)
         mainPanel.add(panel.mainPanel, BorderLayout.CENTER)
         installClickAndKeyListeners(panel.tree)
+        installSelectCurrentCoroutineListener()
     }
 
     fun saveState() {
@@ -107,11 +107,9 @@ internal class CoroutineView(project: Project, javaDebugProcess: JavaDebugProces
     fun collapseCoroutineHierarchyNode() {
         if (isLiveUpdateEnabled) return
         DebuggerUIUtil.invokeLater {
-            panel.tree.root?.let { treeRoot ->
-                val rootNode = treeRoot.children.firstOrNull() ?: return@invokeLater
-                val pathToRootNode = TreePath(panel.tree.treeModel.getPathToRoot(rootNode))
-                if ((rootNode as? XValueNodeImpl)?.name == KotlinDebuggerCoroutinesBundle.message("coroutine.view.node.jobs") && !panel.tree.isCollapsed(pathToRootNode)) {
-                    panel.tree.collapsePath(pathToRootNode)
+            getRootCoroutineContainer()?.path?.let {
+                if (panel.tree.isExpanded(it)) {
+                    panel.tree.collapsePath(it)
                 }
             }
         }
@@ -119,8 +117,27 @@ internal class CoroutineView(project: Project, javaDebugProcess: JavaDebugProces
 
     fun isShowing() = mainPanel.isShowing
 
+    private fun getRootCoroutineContainer(): XValueNodeImpl? {
+        val coroutinesRootNode = (panel.tree.root as? XCoroutinesRootNode)?.children?.firstOrNull()
+        return (coroutinesRootNode as? XValueNodeImpl)?.takeIf {
+            it.valueContainer is RootCoroutineContainer
+        }
+    }
+
+    private fun isRootCoroutineContainerExpanded(): Boolean =
+        getRootCoroutineContainer()?.let { panel.tree.isExpanded(it.path) } ?: false
+
     fun renewRoot(suspendContext: SuspendContextImpl) {
+        panel.tree.setRoot(XCoroutinesRootNode(suspendContext), false)
+        if (treeState != null) {
+            restorer?.dispose()
+            restorer = treeState?.restoreState(panel.tree)
+        }
+    }
+
+    private fun installSelectCurrentCoroutineListener() {
         panel.tree.expandNodesOnLoad { node ->
+            if (!isRootCoroutineContainerExpanded()) return@expandNodesOnLoad false
             val valueContainer = (node as? XValueNodeImpl)?.valueContainer
             if (valueContainer is CoroutineContainer && valueContainer.isPinned) {
                 return@expandNodesOnLoad true
@@ -132,16 +149,12 @@ internal class CoroutineView(project: Project, javaDebugProcess: JavaDebugProces
         }
         panel.tree.selectNodeOnLoad(
             { node ->
+                if (!isRootCoroutineContainerExpanded()) return@selectNodeOnLoad false
                 val valueContainer = (node as? XValueNodeImpl)?.valueContainer
                 valueContainer is CoroutineContainer && valueContainer.isCurrent
             },
             { node -> (node as? XValueNodeImpl)?.isObsolete == true }
         )
-        panel.tree.setRoot(XCoroutinesRootNode(suspendContext), false)
-        if (treeState != null) {
-            restorer?.dispose()
-            restorer = treeState?.restoreState(panel.tree)
-        }
     }
 
     override fun dispose() {
@@ -197,24 +210,22 @@ internal class CoroutineView(project: Project, javaDebugProcess: JavaDebugProces
         RendererContainer(renderer.renderNoIconNode(KotlinDebuggerCoroutinesBundle.message("coroutine.view.node.jobs"))) {
         override fun computeChildren(node: XCompositeNode) {
             invokeInSuspendContext(suspendContext) { suspendContext ->
-                val coroutineDebugProxy = CoroutineDebugProbesProxy(suspendContext)
-                val coroutineCache = coroutineDebugProxy.dumpCoroutines()
+                val (coroutineCache, jobsHierarchyFetched) = CoroutineDebugProbesProxy(suspendContext).dumpCoroutinesWithHierarchy()
                 if (!coroutineCache.isOk()) {
                     node.addChildren(XValueChildrenList.singleton(ErrorNode("coroutine.view.fetching.error")), true)
                     return@invokeInSuspendContext
                 }
                 val children = XValueChildrenList()
-                val cache = coroutineCache.cache
-                val isHierarchyBuilt = coroutineDebugProxy.fetchAndSetJobsAndParentsForCoroutines(cache)
-                if (isHierarchyBuilt) {
-                    val jobToCoroutineInfo = cache.associateBy { it.job }
-                    val pinnedJobs = findCurrentCoroutineHierarchyToPin(cache, jobToCoroutineInfo, suspendContext)
-                    val rootCoroutines = cache.filter { it.parentJob == null }
-                    val parentJobToChildCoroutineInfos = cache.filter { it.parentJob != null }.groupBy { it.parentJob!! }
-                    children.addChildCoroutineContainers(suspendContext, rootCoroutines, parentJobToChildCoroutineInfos, pinnedJobs)
+                val coroutines = coroutineCache.cache
+                if (jobsHierarchyFetched) {
+                    val jobToCoroutineInfo = coroutines.associateBy { it.jobId!! }
+                    val pinnedJobs = findCurrentCoroutineHierarchyToPin(coroutines, jobToCoroutineInfo, suspendContext)
+                    val rootCoroutines = coroutines.filter { it.parentJobId == null }
+                    val parentIdToChildCoroutines = coroutines.filter { it.parentJobId != null }.groupBy { it.parentJobId!! }
+                    children.addChildCoroutineContainers(suspendContext, rootCoroutines, parentIdToChildCoroutines, pinnedJobs)
                 } else {
                     // If the job hierarchy was not fetched, add all the dumped coroutines in the plain view.
-                    children.addChildCoroutineContainers(suspendContext, cache, emptyMap(), emptySet())
+                    children.addChildCoroutineContainers(suspendContext, coroutines, emptyMap(), emptySet())
                 }
                 node.addChildrenOrError(children)
             }
@@ -253,7 +264,7 @@ internal class CoroutineView(project: Project, javaDebugProcess: JavaDebugProces
     ) : RendererContainer(renderer.renderThreadGroup(dispatcherName, isCurrent)) {
         override fun computeChildren(node: XCompositeNode) {
             invokeInSuspendContext(suspendContext) { suspendContext ->
-                coroutines ?: return@invokeInSuspendContext
+                if (coroutines == null) return@invokeInSuspendContext
                 val children = XValueChildrenList()
                 children.addChildCoroutineContainers(suspendContext, coroutines, emptyMap(), emptySet())
                 node.addChildrenOrError(children)
@@ -265,19 +276,19 @@ internal class CoroutineView(project: Project, javaDebugProcess: JavaDebugProces
         private val suspendContext: SuspendContextImpl,
         private val info: CoroutineInfoData,
         val isCurrent: Boolean,
-        private val parentJobToChildCoroutines: Map<String, List<CoroutineInfoData>> = emptyMap(),
-        private val pinnedJobs: Set<String> = emptySet()
+        private val parentJobToChildCoroutines: Map<Long, List<CoroutineInfoData>> = emptyMap(),
+        private val pinnedJobIds: Set<Long> = emptySet()
     ) : RendererContainer(renderer.renderCoroutineInfo(info, isCurrent)) {
         val isPinned: Boolean
-            get() = info.job?.let { pinnedJobs.contains(it) } ?: false
+            get() = info.jobId?.let { pinnedJobIds.contains(it) } ?: false
 
         override fun computeChildren(node: XCompositeNode) {
             invokeInSuspendContext(suspendContext) { suspendContext ->
                 val children = XValueChildrenList()
-                children.add(FramesContainer(info, suspendContext))
-                val job = info.job ?: return@invokeInSuspendContext
-                val childCoroutines = parentJobToChildCoroutines[job] ?: emptyList()
-                children.addChildCoroutineContainers(suspendContext, childCoroutines, parentJobToChildCoroutines, pinnedJobs)
+                children.addTopValue(FramesContainer(info, suspendContext))
+                val jobId = info.jobId ?: return@invokeInSuspendContext
+                val childCoroutines = parentJobToChildCoroutines[jobId] ?: emptyList()
+                children.addChildCoroutineContainers(suspendContext, childCoroutines, parentJobToChildCoroutines, pinnedJobIds)
                 node.addChildrenOrError(children)
             }
         }
@@ -336,18 +347,18 @@ internal class CoroutineView(project: Project, javaDebugProcess: JavaDebugProces
     private fun XValueChildrenList.addChildCoroutineContainers(
         suspendContext: SuspendContextImpl,
         infos: List<CoroutineInfoData>,
-        parentJobToChildCoroutineInfos: Map<String, List<CoroutineInfoData>>,
-        pinnedJobs: Set<String>
+        parentIdToChildCoroutines: Map<Long, List<CoroutineInfoData>>,
+        pinnedJobIds: Set<Long>
     ) {
         for (coroutine in infos) {
             val container = CoroutineContainer(
                 suspendContext = suspendContext,
                 info = coroutine,
                 isCurrent = coroutine.isRunningOnCurrentThread(suspendContext),
-                parentJobToChildCoroutines = parentJobToChildCoroutineInfos,
-                pinnedJobs = pinnedJobs
+                parentJobToChildCoroutines = parentIdToChildCoroutines,
+                pinnedJobIds = pinnedJobIds
             )
-            if (pinnedJobs.contains(coroutine.job)) {
+            if (pinnedJobIds.contains(coroutine.jobId)) {
                 addTopValue(container)
             } else {
                 add(container)
@@ -357,17 +368,17 @@ internal class CoroutineView(project: Project, javaDebugProcess: JavaDebugProces
 
     private fun findCurrentCoroutineHierarchyToPin(
         infos: List<CoroutineInfoData>,
-        jobToCoroutineInfo: Map<String?, CoroutineInfoData>,
+        jobIdToCoroutine: Map<Long, CoroutineInfoData>,
         suspendContext: SuspendContextImpl
-    ): Set<String> {
+    ): Set<Long> {
         val currentCoroutine = infos.find { it.isRunningOnCurrentThread(suspendContext) } ?: return emptySet()
-        val pinnedJobs = mutableSetOf<String>()
-        currentCoroutine.job?.let { pinnedJobs.add(it) }
+        val pinnedJobs = mutableSetOf<Long>()
+        currentCoroutine.jobId!!.let { pinnedJobs.add(it) }
 
-        var parentJob = currentCoroutine.parentJob
-        while (parentJob != null) {
-            pinnedJobs.add(parentJob)
-            parentJob = jobToCoroutineInfo[parentJob]?.parentJob
+        var parentJobId = currentCoroutine.parentJobId
+        while (parentJobId != null) {
+            pinnedJobs.add(parentJobId)
+            parentJobId = jobIdToCoroutine[parentJobId]?.parentJobId
         }
         return pinnedJobs
     }

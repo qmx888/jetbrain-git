@@ -1,4 +1,4 @@
-// Copyright 2000-2017 JetBrains s.r.o. Use of this source code is governed by the Apache 2.0 license that can be found in the LICENSE file.
+// Copyright 2000-2026 JetBrains s.r.o. and contributors. Use of this source code is governed by the Apache 2.0 license.
 package com.jetbrains.python.inspections;
 
 import com.intellij.openapi.vfs.VirtualFile;
@@ -914,7 +914,7 @@ public class PyTypeCheckerInspectionTest extends PyInspectionTestCase {
   // PY-35235
   public void testDistinguishTypingLiteralsFromTypeHintOrValue() {
     doTestByText("from typing_extensions import Literal\n" +
-                 "a = <warning descr=\"Expected type 'Literal[0]', got 'Type[int]' instead\">Literal[10]</warning>  # type: Literal[0]");
+                 "a = <warning descr=\"Expected type 'Literal[0]', got 'Type[Literal[10]]' instead\">Literal[10]</warning>  # type: Literal[0]");
   }
 
   // PY-35235
@@ -1175,8 +1175,8 @@ public class PyTypeCheckerInspectionTest extends PyInspectionTestCase {
                            movie2 = Movie2()
                            s: str = movie['address'][0]
                            s: str = movie2['address'][0]
-                           s: str = movie['address'][<warning descr="Unexpected type(s):(str)Possible type(s):(int)(slice)">'i'</warning>]
-                           s2: str = movie2['address'][<warning descr="Unexpected type(s):(str)Possible type(s):(int)(slice)">'i'</warning>]
+                           s: str = movie['address'][<warning descr="No overload of '__getitem__' matches the arguments. Argument types: (str). Expected one of: (i: int), (s: slice)">'i'</warning>]
+                           s2: str = movie2['address'][<warning descr="No overload of '__getitem__' matches the arguments. Argument types: (str). Expected one of: (i: int), (s: slice)">'i'</warning>]
                            """));
   }
 
@@ -1695,7 +1695,7 @@ public class PyTypeCheckerInspectionTest extends PyInspectionTestCase {
 
   // PY-84657
   public void testClassOverloadedFunctionAssignedToGlobalFunction() {
-    fixme("PY-84657", ComparisonFailure.class, () -> {
+    fixme("PY-84657", ComparisonFailure.class, "Expected type 'str', got 'float | int | str' instead", () -> {
       runWithLanguageLevel(
         LanguageLevel.PYTHON312,
         () -> {
@@ -1710,117 +1710,5 @@ public class PyTypeCheckerInspectionTest extends PyInspectionTestCase {
       () -> {
         doMultiFileTest("main.py");
       });
-  }
-
-  // PY-59260
-  public void testIntFlagValueType() {
-    runWithLanguageLevel(
-      LanguageLevel.PYTHON36,
-      () ->
-        doTestByText("""
-                       from enum import IntFlag, auto
-                       
-                       # IntFlag should infer int
-                       class IF(IntFlag):
-                           FIRST = auto()
-                           SECOND = auto()
-                           THIRD = 42
-                       
-                       # IntFlag.value should return int, so these should not produce type errors
-                       variable: int = IF.FIRST.value
-                       another_var: int = IF.SECOND.value
-                       explicit_var: int = IF.THIRD.value
-                       
-                       # This should produce a type error
-                       wrong_var: str = <warning descr="Expected type 'str', got 'int' instead">IF.FIRST.value</warning>
-                       """));
-  }
-
-  // PY-59260
-  public void testEnumValueTypeInference() {
-    runWithLanguageLevel(
-      LanguageLevel.getLatest(),
-      () ->
-        doTestByText("""
-                       from enum import Enum, IntFlag, StrEnum
-                       
-                       # IntFlag should infer int
-                       class IF(IntFlag):
-                           A = 1
-                       i: int = IF.A.value
-                       
-                       # StrEnum should infer str
-                       class SE(StrEnum):
-                           B = "b"
-                       s: str = SE.B.value
-                       
-                       # str mixin should infer str
-                       class StrMixin(str, Enum):
-                           C = "c"
-                       s2: str = StrMixin.C.value
-                       s3: int = <warning descr="Expected type 'int', got 'str' instead">StrMixin.C.value</warning>
-                       
-                       # Empty str mixin should also infer str
-                       class EmptyStrMixin(str, Enum):
-                           pass
-                       def test_empty(x: EmptyStrMixin):
-                           s4: str = x.value
-                           i2: int = <warning descr="Expected type 'int', got 'str' instead">x.value</warning>
-                       """));
-  }
-
-  // PY-59260
-  public void testEmptyEnumValueTypes() {
-    runWithLanguageLevel(
-      LanguageLevel.PYTHON311,
-      () ->
-        doTestByText("""
-                       from enum import StrEnum, Enum
-                       
-                       class EmptyStrEnum(StrEnum):
-                           pass
-                       
-                       class EmptyStrMixin(str, Enum):
-                           pass
-                       
-                       def test_empty_str_enum(x: EmptyStrEnum):
-                           s: str = x.value
-                           i: int = <warning descr="Expected type 'int', got 'str' instead">x.value</warning>
-                       
-                       def test_empty_str_mixin(x: EmptyStrMixin):
-                           s: str = x.value
-                           i: int = <warning descr="Expected type 'int', got 'str' instead">x.value</warning>
-                       """));
-  }
-
-  // PY-59260
-  public void testEnumValueTypeIgnoresNonMembers() {
-    runWithLanguageLevel(
-      LanguageLevel.getLatest(),
-      () ->
-        doTestByText("""
-                       from enum import Enum, nonmember
-                       
-                       # Simple enum with just integer members
-                       class SimpleEnum(Enum):
-                           A = 1
-                           B = 2
-                       
-                       # Should infer int
-                       x: int = SimpleEnum.A.value
-                       y: str = <warning descr="Expected type 'str', got 'int' instead">SimpleEnum.B.value</warning>
-                       
-                       # Enum with non-member first, then actual members
-                       class E(Enum):
-                           # This should be classified as a non-member
-                           HELPER_CONSTANT = nonmember("not a member")
-                           # These are the actual members - should infer int from first member
-                           FIRST_MEMBER = 42
-                           SECOND_MEMBER = 43
-                       
-                       # Should infer int from FIRST_MEMBER (ignoring HELPER_CONSTANT)
-                       a: int = E.FIRST_MEMBER.value
-                       b: str = <warning descr="Expected type 'str', got 'int' instead">E.SECOND_MEMBER.value</warning>
-                       """));
   }
 }

@@ -3,7 +3,12 @@
 
 package com.intellij.java.workspace.entities
 
-import com.intellij.platform.workspace.storage.*
+import com.intellij.java.workspace.entities.impl.ArtifactsOrderEntityImpl
+import com.intellij.platform.workspace.storage.EntitySource
+import com.intellij.platform.workspace.storage.EntityType
+import com.intellij.platform.workspace.storage.GeneratedCodeApiVersion
+import com.intellij.platform.workspace.storage.MutableEntityStorage
+import com.intellij.platform.workspace.storage.WorkspaceEntityBuilder
 import com.intellij.platform.workspace.storage.impl.containers.toMutableWorkspaceList
 
 @GeneratedCodeApiVersion(3)
@@ -14,6 +19,7 @@ interface ArtifactsOrderEntityBuilder : WorkspaceEntityBuilder<ArtifactsOrderEnt
 
 internal object ArtifactsOrderEntityType : EntityType<ArtifactsOrderEntity, ArtifactsOrderEntityBuilder>() {
   override val entityClass: Class<ArtifactsOrderEntity> get() = ArtifactsOrderEntity::class.java
+  override val entityImplBuilderClass: Class<*> get() = ArtifactsOrderEntityImpl.Builder::class.java
   operator fun invoke(
     orderOfArtifacts: List<String>,
     entitySource: EntitySource,

@@ -1,10 +1,22 @@
 // Copyright 2000-2023 JetBrains s.r.o. and contributors. Use of this source code is governed by the Apache 2.0 license.
 package com.intellij.gradle.toolingExtension.modelAction
 
-import org.jetbrains.annotations.ApiStatus
+import org.jetbrains.annotations.ApiStatus.Experimental
+import org.jetbrains.annotations.ApiStatus.Internal
+import org.jetbrains.annotations.ApiStatus.NonExtendable
 import java.io.Serializable
 
-@ApiStatus.Experimental
+/**
+ * Represents a possible Gradle model fetch phase.
+ *
+ * Provider-backed phases are executed only when at least one [org.jetbrains.plugins.gradle.model.ProjectImportModelProvider]
+ * is registered for them. The Gradle model fetch action is the only component that owns this guarantee;
+ * declaring a provider-backed phase constant does not schedule it by itself.
+ *
+ * [BASE_SCRIPT_MODEL_PHASE] is an internal action-owned phase emitted directly by the Gradle model fetch action.
+ */
+@Experimental
+@NonExtendable
 sealed interface GradleModelFetchPhase : Comparable<GradleModelFetchPhase>, Serializable {
 
   /**
@@ -13,12 +25,20 @@ sealed interface GradleModelFetchPhase : Comparable<GradleModelFetchPhase>, Seri
   val name: String
 
   /**
+   * In this phase, Gradle fetches models available before Gradle has loaded projects.
+   *
+   * @see org.gradle.tooling.BuildActionExecuter.setStreamedValueListener
+   */
+  sealed interface BaseScript : GradleModelFetchPhase
+
+  /**
    * In these phases, Gradle model providers are executed when the Gradle has loaded projects.
    *
    * @see org.gradle.tooling.BuildActionExecuter.Builder.projectsLoaded
    * @see org.gradle.tooling.IntermediateResultHandler
    * @see org.gradle.tooling.BuildActionExecuter.setStreamedValueListener
    */
+  @NonExtendable
   sealed interface ProjectLoaded : GradleModelFetchPhase {
 
     val order: Int
@@ -38,6 +58,7 @@ sealed interface GradleModelFetchPhase : Comparable<GradleModelFetchPhase>, Seri
    * @see org.gradle.tooling.IntermediateResultHandler
    * @see org.gradle.tooling.BuildActionExecuter.setStreamedValueListener
    */
+  @NonExtendable
   sealed interface BuildFinished : GradleModelFetchPhase {
 
     val order: Int
@@ -53,11 +74,23 @@ sealed interface GradleModelFetchPhase : Comparable<GradleModelFetchPhase>, Seri
   companion object {
 
     /**
+     * In this phase, Gradle fetches a base classpath model for Gradle script files.
+     * This enables early IDE support for Gradle scripts even if the full Gradle sync fails.
+     */
+    @JvmField
+    val BASE_SCRIPT_MODEL_PHASE: GradleModelFetchPhase = GradleBaseScriptModelFetchPhase
+
+    /**
      * In this phase, Gradle model providers fetch Gradle tooling models after gradle projects are loaded and before "sync" tasks are run.
      * This can be used to set up "sync" tasks for the import
      */
+    @Internal
     @JvmField
     val PROJECT_LOADED_PHASE: GradleModelFetchPhase = ProjectLoaded(0, "PROJECT_LOADED_PHASE")
+
+    @Internal
+    @JvmField
+    val TURN_OFF_DEFAULT_TASKS_PHASE: GradleModelFetchPhase = ProjectLoaded(1, "TURN_OFF_DEFAULT_TASKS_PHASE")
 
     /**
      * In this phase, Gradle model providers fetch a Gradle project identification models.
@@ -80,7 +113,7 @@ sealed interface GradleModelFetchPhase : Comparable<GradleModelFetchPhase>, Seri
     val PROJECT_SOURCE_SET_DEPENDENCY_PHASE: GradleModelFetchPhase = BuildFinished(2000, "DEPENDENCY_MODEL_PHASE")
 
     /**
-     *
+     * In this phase, Gradle model providers fetch a full classpath model for Gradle script files.
      */
     @JvmField
     val SCRIPT_MODEL_PHASE: GradleModelFetchPhase = BuildFinished(3000, "SCRIPT_MODEL_PHASE")
@@ -97,6 +130,21 @@ sealed interface GradleModelFetchPhase : Comparable<GradleModelFetchPhase>, Seri
 
 // Implementation
 
+private data object GradleBaseScriptModelFetchPhase : GradleModelFetchPhase.BaseScript {
+
+  override val name: String = "BASE_SCRIPT_MODEL_PHASE"
+
+  override fun toString(): String = name
+
+  override fun compareTo(other: GradleModelFetchPhase): Int {
+    return when (other) {
+      is GradleBaseScriptModelFetchPhase -> 0
+      is GradleProjectLoadedModelFetchPhase,
+      is GradleBuildFinishedModelFetchPhase -> -1
+    }
+  }
+}
+
 private class GradleProjectLoadedModelFetchPhase(
   override val order: Int,
   override val name: String,
@@ -106,6 +154,7 @@ private class GradleProjectLoadedModelFetchPhase(
 
   override fun compareTo(other: GradleModelFetchPhase): Int {
     return when (other) {
+      is GradleBaseScriptModelFetchPhase -> 1
       is GradleProjectLoadedModelFetchPhase -> order.compareTo(other.order)
       is GradleBuildFinishedModelFetchPhase -> -1
     }
@@ -134,6 +183,7 @@ private class GradleBuildFinishedModelFetchPhase(
 
   override fun compareTo(other: GradleModelFetchPhase): Int {
     return when (other) {
+      is GradleBaseScriptModelFetchPhase -> 1
       is GradleProjectLoadedModelFetchPhase -> 1
       is GradleBuildFinishedModelFetchPhase -> order.compareTo(other.order)
     }

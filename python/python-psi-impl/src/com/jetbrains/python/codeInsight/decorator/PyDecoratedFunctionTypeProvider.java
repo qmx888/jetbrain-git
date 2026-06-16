@@ -12,7 +12,10 @@ import com.jetbrains.python.psi.PyDecoratorList;
 import com.jetbrains.python.psi.PyFile;
 import com.jetbrains.python.psi.PyFunction;
 import com.jetbrains.python.psi.PyKnownDecoratorUtil;
+import com.jetbrains.python.psi.PyNamedParameter;
 import com.jetbrains.python.psi.PyTypedElement;
+import com.jetbrains.python.psi.impl.ParamHelper;
+import com.jetbrains.python.psi.types.PyCallableParameter;
 import com.jetbrains.python.psi.types.PyCallableType;
 import com.jetbrains.python.psi.types.PyCallableTypeImpl;
 import com.jetbrains.python.psi.types.PyClassType;
@@ -30,12 +33,73 @@ import java.util.Collections;
 import java.util.List;
 
 import static com.jetbrains.python.psi.resolve.PyResolveUtil.resolveQualifiedNameInScope;
-import static com.jetbrains.python.psi.types.PyTypeUtil.getNotNullToRef;
+import static com.jetbrains.python.psi.types.PyTypeUtil.notNullToRef;
 
 /**
  * Infer type for reference of decorated {@link PyDecoratable} objects.
  */
 public final class PyDecoratedFunctionTypeProvider extends PyTypeProviderBase {
+
+  @Override
+  public @Nullable Ref<PyType> getParameterType(@NotNull PyNamedParameter param,
+                                                @NotNull PyFunction func,
+                                                @NotNull TypeEvalContext context) {
+    if (param.getAnnotation() != null || param.getTypeCommentAnnotation() != null) return null;
+    if (param.isPositionalContainer() || param.isKeywordContainer()) return null;
+
+    var decoratorList = func.getDecoratorList();
+    if (decoratorList == null) return null;
+    var decorators = decoratorList.getDecorators();
+
+    // Walk from the innermost decorator (applied directly to `func`) outward and infer from the
+    // first one that declares an explicit parameter signature. Unlike the reference type, parameter
+    // inference only needs the decorator's parameter signature, not its return type, so a decorator
+    // without a return-type hint (e.g. `def d(fn: Callable[[int], str]): ...`) is still usable.
+    // Decorators without parameter types (untyped/identity decorators) are treated as identity and
+    // skipped. Known decorators (@staticmethod, @classmethod, @property, ...) never constrain
+    // `func`'s parameters and must not override inference for parameters such as `self`, so they
+    // are skipped too.
+    for (int i = decorators.length - 1; i >= 0; i--) {
+      PyDecorator decorator = decorators[i];
+      if (!PyKnownDecoratorUtil.asKnownDecorators(decorator, context).isEmpty()) continue;
+
+      List<PyCallableParameter> expectedParams = getExpectedFunctionParameters(decorator, context);
+      if (expectedParams == null) continue;
+
+      // Find the position of param among the function's named parameters
+      var params = ParamHelper.collectNamedParameters(func.getParameterList());
+      int paramPos = params.indexOf(param);
+      if (paramPos < 0) return null;
+
+      var type = ParamHelper.getExpectedTypeForPositionalParam(paramPos, expectedParams, context);
+      return type != null ? Ref.create(type) : null;
+    }
+    return null;
+  }
+
+  /**
+   * Returns the explicit (non-implicit) parameters of the callable type that {@code decorator}
+   * expects its decorated function to have, or {@code null} if the decorator does not declare a
+   * usable (typed) parameter signature.
+   */
+  private static @Nullable List<PyCallableParameter> getExpectedFunctionParameters(@NotNull PyDecorator decorator,
+                                                                                   @NotNull TypeEvalContext context) {
+    var decoratorCallableType = getDecoratorType(decorator, null, context);
+    if (decoratorCallableType == null) return null;
+
+    var decoratorParams = decoratorCallableType.getParameters(context);
+    if (decoratorParams == null || decoratorParams.isEmpty()) return null;
+
+    var expectedFuncType = decoratorParams.getFirst().getType(context);
+    if (!(expectedFuncType instanceof PyCallableType expectedCallable)) return null;
+
+    var expectedParams = expectedCallable.getParameters(context);
+    if (expectedParams == null) return null;
+
+    // Apply implicit offset to skip self-like params in the expected callable
+    int implicitOffset = Math.min(expectedCallable.getImplicitOffset(), expectedParams.size());
+    return expectedParams.subList(implicitOffset, expectedParams.size());
+  }
 
   @Override
   public @Nullable Ref<PyType> getReferenceType(@NotNull PsiElement referenceTarget,
@@ -127,7 +191,7 @@ public final class PyDecoratedFunctionTypeProvider extends PyTypeProviderBase {
     }
 
     // TODO Don't ignore explicit return type Any on one of the decorators
-    return getNotNullToRef(currentType);
+    return notNullToRef(currentType);
   }
 
   private static @Nullable PyCallableType getDecoratorType(@NotNull PyDecorator decorator,
@@ -237,6 +301,9 @@ public final class PyDecoratedFunctionTypeProvider extends PyTypeProviderBase {
         type = PyTypeChecker.findGenericDefinitionType(pyClass, context);
         if (type instanceof PyClassType classType) {
           type = classType.toClass();
+        }
+        if (type == null) {
+          type = pyClass.getType(context);
         }
       }
       else {

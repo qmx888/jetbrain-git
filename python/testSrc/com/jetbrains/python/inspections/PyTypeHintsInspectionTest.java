@@ -1,6 +1,7 @@
-// Copyright 2000-2018 JetBrains s.r.o. Use of this source code is governed by the Apache 2.0 license that can be found in the LICENSE file.
+// Copyright 2000-2026 JetBrains s.r.o. and contributors. Use of this source code is governed by the Apache 2.0 license.
 package com.jetbrains.python.inspections;
 
+import com.intellij.idea.TestFor;
 import com.jetbrains.python.fixtures.PyInspectionTestCase;
 import com.jetbrains.python.psi.LanguageLevel;
 import org.jetbrains.annotations.NotNull;
@@ -377,6 +378,46 @@ public class PyTypeHintsInspectionTest extends PyInspectionTestCase {
     doTestByText("""
                    class MyClass[T1, T2]:
                        def __init__(self: <warning descr="Class-scoped type variables should not be used in the annotation for 'self' parameter of '__init__' method">MyClass[T2, T1]</warning>) -> None: ...
+                   """);
+  }
+
+  public void testInconsistentTypeVarOrder() {
+    doTestByText("""
+                   from typing import Generic, TypeVar
+               
+                   T1 = TypeVar('T1')
+                   T2 = TypeVar('T2')
+               
+                   class Grandparent(Generic[T1, T2]): ...
+                   class Parent(Grandparent[T1, T2]): ...
+                   class BadChild(Parent[T1, T2], <warning descr="Generic base class 'Grandparent' is inherited with inconsistent type arguments: 'Grandparent[T1, T2]' and 'Grandparent[T2, T1]'">Grandparent[T2, T1]</warning>): ...
+                   """);
+  }
+
+  public void testInconsistentTypeVarOrderDiamond() {
+    doTestByText("""
+                   from typing import Generic, TypeVar
+               
+                   T1 = TypeVar('T1')
+                   T2 = TypeVar('T2')
+               
+                   class Base(Generic[T1, T2]): ...
+                   class Left(Base[T1, T2]): ...
+                   class Right(Base[T2, T1]): ...
+                   class BadDiamond(Left[T1, T2], <warning descr="Generic base class 'Base' is inherited with inconsistent type arguments: 'Base[T1, T2]' and 'Base[T2, T1]'">Right[T1, T2]</warning>): ...
+                   """);
+  }
+
+  public void testConsistentTypeVarOrderWithReorderedIntermediate() {
+    doTestByText("""
+                   from typing import Generic, TypeVar
+               
+                   T1 = TypeVar('T1')
+                   T2 = TypeVar('T2')
+               
+                   class Base(Generic[T1, T2]): ...
+                   class Reordered(Generic[T1, T2], Base[T2, T1]): ...
+                   class GoodChild(Reordered[T1, T2], Base[T2, T1]): ...
                    """);
   }
 
@@ -944,14 +985,14 @@ public class PyTypeHintsInspectionTest extends PyInspectionTestCase {
                        def __init__(self, v):
                            pass
 
-                   def a(b: <warning descr="Generics should be specified through square brackets"><warning descr="Type hint is invalid or refers to the expression which is not a correct type">A(int)</warning></warning>):
+                   def a(b: <warning descr="Generics should be specified through square brackets"><warning descr="Invalid type annotation">A(int)</warning></warning>):
                        pass
 
                    def c(d):
                        # type: (<warning descr="Generics should be specified through square brackets">A(int)</warning>) -> None
                        pass
 
-                   def e(f: <warning descr="Generics should be specified through square brackets"><warning descr="Type hint is invalid or refers to the expression which is not a correct type">A()</warning></warning>):
+                   def e(f: <warning descr="Generics should be specified through square brackets"><warning descr="Invalid type annotation">A()</warning></warning>):
                        pass
 
                    def g(h):
@@ -962,7 +1003,7 @@ public class PyTypeHintsInspectionTest extends PyInspectionTestCase {
                    v2 = None  # type: <warning descr="Generics should be specified through square brackets">A(int)</warning>
 
                    U = A
-                   def i(j: <warning descr="Generics should be specified through square brackets"><warning descr="Type hint is invalid or refers to the expression which is not a correct type">U(int)</warning></warning>):
+                   def i(j: <warning descr="Generics should be specified through square brackets"><warning descr="Invalid type annotation">U(int)</warning></warning>):
                        pass
                       \s
                    v3 = None  # type: <warning descr="Generics should be specified through square brackets">U(int)</warning>
@@ -1391,7 +1432,20 @@ public class PyTypeHintsInspectionTest extends PyInspectionTestCase {
 
                    d: Annotated[A, '']
                    e: Annotated[<warning descr="'Annotated' must be called with at least two arguments">Annotated[A, True]</warning>]
-                   f: Annotated[Annotated[<warning descr="'Annotated' must be called with at least two arguments">A</warning>], '']""");
+                   f: Annotated[Annotated[<warning descr="'Annotated' must be called with at least two arguments">A</warning>], '']
+                   g: Annotated[<error>[]</error>, 1]
+                   """);
+  }
+
+  @TestFor(issues = "PY-89188")
+  public void testAnnotatedMetadata() {
+    doTestByText(
+      """
+       from typing import Annotated
+
+       a: Annotated[int, [], print("asdf")]
+       """
+    );
   }
 
   // PY-41847
@@ -1549,7 +1603,7 @@ public class PyTypeHintsInspectionTest extends PyInspectionTestCase {
     doTestByText("""
                    from typing import Self
 
-                   something: <warning descr="Type hint is invalid or refers to the expression which is not a correct type"><warning descr="Cannot use 'Self' outside class">Self</warning> | None</warning> = None
+                   something: <warning descr="Cannot use 'Self' outside class">Self</warning> | None = None
                    """);
   }
 
@@ -1722,34 +1776,34 @@ public class PyTypeHintsInspectionTest extends PyInspectionTestCase {
     doTestByText("""
                     from typing_extensions import TypeIs
                     
-                    def <warning descr="Return type of TypeIs 'float' is not consistent with the type of the first parameter 'int'">foo</warning>(x: int) -> TypeIs[float]:
-                      ...
+                    def <warning descr="Return type of TypeIs 'float | int' is not consistent with the type of the first parameter 'int'">foo</warning>(x: int) -> TypeIs[float]:
+                        ...
                     
                     def bar(x: float) -> TypeIs[float]:
-                      ...
+                        ...
                     
                     class A:
-                      def <warning descr="Return type of TypeIs 'float' is not consistent with the type of the first parameter 'int'">f1</warning>(self, x: int) -> TypeIs[float]:
-                        ...
+                        def <warning descr="Return type of TypeIs 'float | int' is not consistent with the type of the first parameter 'int'">f1</warning>(self, x: int) -> TypeIs[float]:
+                            ...
                     
-                      def f2(self, x: float) -> TypeIs[float]:
-                        ...
+                        def f2(self, x: float) -> TypeIs[float]:
+                            ...
                     
-                      @classmethod
-                      def <warning descr="Return type of TypeIs 'float' is not consistent with the type of the first parameter 'int'">f3</warning>(cls, x: int) -> TypeIs[float]:
-                        ...
+                        @classmethod
+                        def <warning descr="Return type of TypeIs 'float | int' is not consistent with the type of the first parameter 'int'">f3</warning>(cls, x: int) -> TypeIs[float]:
+                            ...
                     
-                      @classmethod
-                      def f4(cls, x: float) -> TypeIs[float]:
-                        ...
+                        @classmethod
+                        def f4(cls, x: float) -> TypeIs[float]:
+                            ...
 
-                      @staticmethod
-                      def <warning descr="Return type of TypeIs 'float' is not consistent with the type of the first parameter 'int'">f5</warning>(x: int) -> TypeIs[float]:
-                        ...
+                        @staticmethod
+                        def <warning descr="Return type of TypeIs 'float | int' is not consistent with the type of the first parameter 'int'">f5</warning>(x: int) -> TypeIs[float]:
+                            ...
                     
-                      @staticmethod
-                      def f6(x: float) -> TypeIs[float]:
-                        ...
+                        @staticmethod
+                        def f6(x: float) -> TypeIs[float]:
+                            ...
                     """);
   }
 
@@ -1952,6 +2006,7 @@ public class PyTypeHintsInspectionTest extends PyInspectionTestCase {
                    T5 = TypeVar("T5", default=list)
                    class Clazz: ...
                    T6 = TypeVar("T6", default=Clazz)
+                   T7 = TypeVar("T7", default=<warning descr="Default type must be a type expression">[int]</warning>)
                    """);
   }
 
@@ -1970,6 +2025,7 @@ public class PyTypeHintsInspectionTest extends PyInspectionTestCase {
                    class Clazz[T = <warning descr="Default type must be a type expression">True</warning>]: ...
                    class Clazz[T = <warning descr="'TypeVarTuple' cannot be used in default type of TypeVar">Ts1</warning>]: ...
                    class Clazz[T = <warning descr="'ParamSpec' cannot be used in default type of TypeVar">P1</warning>]: ...
+                   class Clazz[T = <warning descr="Default type must be a type expression">[int]</warning>]: ...
                    """);
   }
 
@@ -2549,7 +2605,7 @@ public class PyTypeHintsInspectionTest extends PyInspectionTestCase {
                  a1 = 3
                  a2 = a1
                  a3 = a2
-                 def foo(p: <warning descr="Type hint is invalid or refers to the expression which is not a correct type">a3</warning>): ...
+                 def foo(p: <warning descr="Invalid type annotation">a3</warning>): ...
                  """);
   }
 
@@ -2926,21 +2982,21 @@ public class PyTypeHintsInspectionTest extends PyInspectionTestCase {
   // PY-76851
   public void testInvalidTypeAliasStatement() {
     doTestByText("""
-               var1 = 1
-               type BadTypeAlias1 = <warning descr="Type hint is invalid or refers to the expression which is not a correct type">eval(<warning descr="Generics should be specified through square brackets">"".join(<warning descr="Generics should be specified through square brackets">map(chr, [105, 110, 116])</warning>)</warning>)</warning>
-               type BadTypeAlias2 = <warning descr="Type hint is invalid or refers to the expression which is not a correct type">[int, str]</warning>
-               type BadTypeAlias3 = <warning descr="Type hint is invalid or refers to the expression which is not a correct type">((int, str),)</warning>
-               type BadTypeAlias4 = <warning descr="Type hint is invalid or refers to the expression which is not a correct type">[int for i in <warning descr="Generics should be specified through square brackets">range(1)</warning>]</warning>
-               type BadTypeAlias5 = <warning descr="Type hint is invalid or refers to the expression which is not a correct type">{"a": "b"}</warning>
-               type BadTypeAlias6 = <warning descr="Type hint is invalid or refers to the expression which is not a correct type">(lambda: int)()</warning>
-               type BadTypeAlias7 = <warning descr="Type hint is invalid or refers to the expression which is not a correct type">[int][0]</warning>
-               type BadTypeAlias8 = <warning descr="Type hint is invalid or refers to the expression which is not a correct type">int if 1 < 3 else str</warning>
-               type BadTypeAlias9 = <warning descr="Type hint is invalid or refers to the expression which is not a correct type">var1</warning>
-               type BadTypeAlias10 = <warning descr="Type hint is invalid or refers to the expression which is not a correct type">True</warning>
-               type BadTypeAlias11 = <warning descr="Type hint is invalid or refers to the expression which is not a correct type">1</warning>
-               type BadTypeAlias12 = <warning descr="Type hint is invalid or refers to the expression which is not a correct type">list or set</warning>
-               type BadTypeAlias13 = <warning descr="Type hint is invalid or refers to the expression which is not a correct type">f"{'int'}"</warning>
-               """);
+                   var1 = 1
+                   type BadTypeAlias1 = <warning descr="Invalid type annotation">eval(<warning descr="Generics should be specified through square brackets">"".join(<warning descr="Generics should be specified through square brackets">map(chr, [105, 110, 116])</warning>)</warning>)</warning>
+                   type BadTypeAlias2 = <warning descr="Invalid type annotation">[int, str]</warning>
+                   type BadTypeAlias3 = (<warning descr="Invalid type annotation">(int, str),</warning>)
+                   type BadTypeAlias4 = <warning descr="Invalid type annotation">[int for i in <warning descr="Generics should be specified through square brackets">range(1)</warning>]</warning>
+                   type BadTypeAlias5 = <warning descr="Invalid type annotation">{"a": "b"}</warning>
+                   type BadTypeAlias6 = <warning descr="Invalid type annotation">(lambda: int)()</warning>
+                   type BadTypeAlias7 = <warning descr="Invalid type annotation">[int][0]</warning>
+                   type BadTypeAlias8 = <warning descr="Invalid type annotation">int if 1 < 3 else str</warning>
+                   type BadTypeAlias9 = <warning descr="Invalid type annotation">var1</warning>
+                   type BadTypeAlias10 = <warning descr="Invalid type annotation">True</warning>
+                   type BadTypeAlias11 = <warning descr="Invalid type annotation">1</warning>
+                   type BadTypeAlias12 = <warning descr="Invalid type annotation">list or set</warning>
+                   type BadTypeAlias13 = <warning descr="Invalid type annotation">f"{'int'}"</warning>
+                   """);
   }
 
   // PY-76851
@@ -3000,6 +3056,31 @@ public class PyTypeHintsInspectionTest extends PyInspectionTestCase {
                """);
   }
 
+  @TestFor(issues="PY-88277")
+  public void testClassTypeVarTupleBoundMismatch() {
+    doTestByText("""
+                   from typing import Unpack
+                   
+                   class C[*Ts: <error descr="Type variable tuples cannot have constraints or upper bounds">str</error>]: ...
+                   c = C[str, str]()
+                   c = C[<warning descr="Expected type '*Ts ≤: str', got '*tuple[str, int]' instead">str, int</warning>]()
+                   c = C[<warning descr="Expected type '*Ts ≤: str', got '*tuple[int, str]' instead">int, str</warning>]()
+                   
+                   class D[*Ts: <error descr="Type variable tuples cannot have constraints or upper bounds">Unpack[tuple[str]]</error>]: ...
+                   d = D[str]()
+                   d = D[<warning descr="Expected type '*Ts ≤: *tuple[str]', got '*tuple[str, str]' instead">str, str</warning>]()
+                   d = D[<warning descr="Expected type '*Ts ≤: *tuple[str]', got '*tuple[int, str]' instead">int, str</warning>]()
+                   """);
+  }
+
+  @TestFor(issues="PY-88277")
+  public void testClassParamSpecBoundMismatch() {
+    doTestByText("""
+                   class C[**P: <error descr="Parameter specifications cannot have constraints or upper bounds">[str]</error>]: ...
+                   c = C[<warning descr="Expected type '**P ≤: [str]', got '[int]' instead">int</warning>]()
+                   """);
+  }
+
   // PY-76851
   public void testTypeAliasVariadicTypeParameters() {
     doTestByText("""
@@ -3014,14 +3095,14 @@ public class PyTypeHintsInspectionTest extends PyInspectionTestCase {
   // PY-76851
   public void testSimpleRecursiveTypeAliasStatement() {
     doTestByText("""
-                   type TypeAlias = <warning descr="Type hint is invalid or refers to the expression which is not a correct type">TypeAlias</warning>
+                   type TypeAlias = <warning descr="Invalid type annotation">TypeAlias</warning>
                    """);
   }
 
   // PY-76851
   public void testRecursiveTypeAliasStatementInUnion() {
     doTestByText("""
-                   type TypeAlias = <warning descr="Type hint is invalid or refers to the expression which is not a correct type">int | TypeAlias</warning>
+                   type TypeAlias = int | str | <warning descr="Circular reference">TypeAlias</warning>
                    type TypeAlias2 = int | str
                    """);
   }
@@ -3029,7 +3110,7 @@ public class PyTypeHintsInspectionTest extends PyInspectionTestCase {
   // PY-76851
   public void testUnionRecursiveTypeAliasStatement() {
     doTestByText("""
-                   type TypeAlias = <warning descr="Type hint is invalid or refers to the expression which is not a correct type">TypeAlias | int</warning>
+                   type TypeAlias = <warning descr="Circular reference">TypeAlias</warning> | int
                    """);
   }
 
@@ -3037,9 +3118,9 @@ public class PyTypeHintsInspectionTest extends PyInspectionTestCase {
   // PY-76851
   public void testDeepRecursiveTypeAliasStatement() {
     doTestByText("""
-                   type TypeAlias1 = <warning descr="Type hint is invalid or refers to the expression which is not a correct type">TypeAlias2</warning>
-                   type TypeAlias2 = <warning descr="Type hint is invalid or refers to the expression which is not a correct type">TypeAlias3</warning>
-                   type TypeAlias3 = <warning descr="Type hint is invalid or refers to the expression which is not a correct type">TypeAlias1</warning>
+                   type TypeAlias1 = <warning descr="Invalid type annotation">TypeAlias2</warning>
+                   type TypeAlias2 = <warning descr="Invalid type annotation">TypeAlias3</warning>
+                   type TypeAlias3 = <warning descr="Invalid type annotation">TypeAlias1</warning>
                    """);
   }
 
@@ -3299,7 +3380,18 @@ public class PyTypeHintsInspectionTest extends PyInspectionTestCase {
       {"list[((<warning descr=\"Passed type arguments do not match type parameters [_T] of class 'list'\">[int]</warning>))]"},
       {"List[((<error descr=\"Parameters to generic types must be types\">[int]</error>))]"},
 
+      {"C[int]", "C[int]"},
+      {"C[int,]", "C[int]"},
+      {"C[((int))]", "C[int]"},
+      {"C[((int)),]", "C[int]"},
       {"C[((int,))]", "C[int]"},
+      {"C[((((int)),))]", "C[int]"},
+
+      {"C[(((<warning descr=\"Unbound type variable\">TV</warning>)))]"},
+      {"list[((<warning descr=\"Unbound type variable\">TV</warning>))]"},
+      {"<warning descr=\"'Generic' cannot be used as a type expression\">Generic</warning>[((<warning descr=\"Unbound type variable\">TV</warning>))]"},
+      {"dict[((int)), (((<warning descr=\"Unbound type variable\">TV</warning>)))]"},
+      {"Annotated[((str, dict[str, str]))]"},
     });
   }
 
@@ -3362,7 +3454,7 @@ public class PyTypeHintsInspectionTest extends PyInspectionTestCase {
                    CARTESIAN = [Direction.NORTH, Direction.EAST, Direction.SOUTH, Direction.WEST]
                    print(CARTESIAN[0])
                    
-                   type Alias = <warning descr="Type hint is invalid or refers to the expression which is not a correct type">[int, str]</warning>
+                   type Alias = <warning descr="Invalid type annotation">[int, str]</warning>
                    myAlias: TypeAlias = <warning descr="Assigned value of type alias must be a correct type">[int, str]</warning>
                    """);
   }
@@ -3398,6 +3490,63 @@ public class PyTypeHintsInspectionTest extends PyInspectionTestCase {
                    """);
   }
 
+  @TestFor(issues = "PY-76895")
+  public void testInvalidExpressionInsideBound() {
+    doTestByText(
+      """
+        var = 1
+        class ClassA[T: (<warning descr="Invalid type annotation">3</warning>, bytes)]: ...
+        class ClassB[T: (int, <warning descr="Invalid type annotation">[1, 2, 3]</warning>)]: ...
+        class ClassC[T: (int, <warning descr="Invalid type annotation">var</warning>)]: ...
+        class ClassC[T: (int, <warning descr="Invalid type annotation">lambda x: x</warning>)]: ...
+        class ClassD[T: (int, <warning descr="Invalid type annotation">ClassA[bytes]()</warning>)]: ...
+        
+        class ClassA[T: (<warning descr="Invalid type annotation">3</warning>, bytes)]: ...
+        class ClassB[T: (int, <warning descr="Invalid type annotation">[1, 2, 3]</warning>)]: ...
+        class ClassC[T: (int, <warning descr="Invalid type annotation">var</warning>)]: ...
+        class ClassC[T: (int, <warning descr="Invalid type annotation">lambda x: x</warning>)]: ...
+        class ClassD[T: (int, <warning descr="Invalid type annotation">ClassA[bytes]()</warning>)]: ...
+        class ClassD[T: <warning descr="Invalid type annotation">[int]</warning>]: ...
+        """);
+  }
+
+  @TestFor(issues = "PY-89092")
+  public void testParamSpecInBound() {
+    doTestByText(
+      """
+        from collections.abc import Callable
+        
+        class A[**P]: ...
+        class B[T: Callable[[], None] = Callable[[], None]]: ...
+        class C[T: A[[]] = A[[]]]: ...
+        """);
+  }
+
+  @TestFor(issues = "PY-76895")
+  public void testInvalidExpressionInDefault() {
+    doTestByText(
+      """
+        var = 1
+        class ClassA[T: (<warning descr="Invalid type annotation">3</warning>, bytes)]: ...
+        class ClassB[T: (int, <warning descr="Invalid type annotation">[1, 2, 3]</warning>)]: ...
+        class ClassC[T: (int, <warning descr="Invalid type annotation">var</warning>)]: ...
+        class ClassC[T: (int, <warning descr="Invalid type annotation">lambda x: x</warning>)]: ...
+        class ClassD[T: (int, <warning descr="Invalid type annotation">ClassA[bytes]()</warning>)]: ...
+        class ClassE[T: <warning descr="Invalid type annotation">3</warning>]: ...
+        """);
+  }
+
+  @TestFor(issues = "PY-87564")
+  public void testTypeVarBoundWithModuleQualifier() {
+    myFixture.configureByText("mod.py", "class MyClass: pass");
+    doTestByText(
+      """
+        import mod
+        
+        class A[T: mod.MyClass]: ...
+        """);
+  }
+
   private void generateVariableTypeAssertions(@NotNull Object @NotNull [][] cases) {
     StringBuilder body = new StringBuilder();
 
@@ -3419,12 +3568,180 @@ public class PyTypeHintsInspectionTest extends PyInspectionTestCase {
 
     doTestByText(
       ("""
-         from typing import assert_type, Any, Never, Generic, List, Set, Dict, Tuple, Union, Optional, Callable
+         from typing import assert_type, TypeVar, Generic, Any, Never, List, Set, Dict, Tuple, Union, Optional, Callable, Annotated
+         
+         TV = TypeVar("TV")
          
          class C[T]: ...
          class C2[T1, T2]: ...
          """
        + body).trim()
+    );
+  }
+
+  // PY-76850
+  public void testParamSpecComponentsSwapped() {
+    doTestByText("""
+                   def mixed_up[**P](*args: <warning descr="'P.kwargs' can only be used to annotate '**kwargs' parameters">P.kwargs</warning>, **kwargs: <warning descr="'P.args' can only be used to annotate '*args' parameters">P.args</warning>) -> None:
+                       pass
+                   """);
+  }
+
+  // PY-76850
+  public void testParamSpecComponentOnRegularParam() {
+    doTestByText("""
+                   def misplaced[**P](x: <warning descr="ParamSpec component can only be used to annotate '*args' or '**kwargs' parameters">P.args</warning>) -> None:
+                       pass
+                   """);
+  }
+
+  // PY-76850
+  public void testParamSpecComponentSameForBoth() {
+    doTestByText("""
+                   def bad[**P](*args: P.args, **kwargs: <warning descr="'P.args' can only be used to annotate '*args' parameters">P.args</warning>) -> None:
+                       pass
+                   """);
+  }
+
+  // PY-76850
+  public void testParamSpecComponentsKwargsWithIllegalAnnotation() {
+    doTestByText("""
+                   from typing import Any
+                   def bad[**P](*args: <warning descr="'P.args' and 'P.kwargs' must both be present in the same function signature">P.args</warning>, **kwargs: Any) -> None:
+                       pass
+                   """);
+  }
+
+  // PY-76850
+  public void testParamSpecComponentNotInScope() {
+    doTestByText("""
+                   from typing import ParamSpec
+                   P = ParamSpec("P")
+                   def out_of_scope(*args: <warning descr="ParamSpec 'P' must be a type parameter of the enclosing callable or class">P</warning>.args, **kwargs: <warning descr="ParamSpec 'P' must be a type parameter of the enclosing callable or class">P</warning>.kwargs) -> None:
+                       pass
+                   """);
+  }
+
+  // PY-76850
+  public void testParamSpecComponentAsVariableAnnotation() {
+    doTestByText("""
+                   def foo[**P]() -> None:
+                       stored_args: <warning descr="ParamSpec component can only be used to annotate '*args' or '**kwargs' parameters">P.args</warning>
+                       stored_kwargs: <warning descr="ParamSpec component can only be used to annotate '*args' or '**kwargs' parameters">P.kwargs</warning>
+                   """);
+  }
+
+  // PY-76850
+  public void testParamSpecComponentUnpairedArgs() {
+    doTestByText("""
+                   def just_args[**P](*args: <warning descr="'P.args' and 'P.kwargs' must both be present in the same function signature">P.args</warning>) -> None:
+                       pass
+                   """);
+  }
+
+  // PY-76850
+  public void testParamSpecComponentUnpairedKwargs() {
+    doTestByText("""
+                   def just_kwargs[**P](**kwargs: <warning descr="'P.args' and 'P.kwargs' must both be present in the same function signature">P.kwargs</warning>) -> None:
+                       pass
+                   """);
+  }
+
+  // PY-76850
+  public void testParamSpecComponentKeywordOnlyBetween() {
+    doTestByText("""
+                   def bar[**P](*args: P.args, <warning descr="No parameters allowed between 'P.args' and 'P.kwargs'">s: str</warning>, **kwargs: P.kwargs) -> None:
+                       pass
+                   """);
+  }
+
+  // PY-76850
+  public void testParamSpecComponentInScopeViaGenericClass() {
+    doTestByText("""
+                   from typing import ParamSpec, Generic
+                   P = ParamSpec("P")
+                   class Wrapper(Generic[P]):
+                       def call(self, *args: P.args, **kwargs: P.kwargs) -> None:
+                           pass
+                   """);
+  }
+
+  // PY-76850
+  public void testParamSpecComponentInScopeViaProtocolClass() {
+    doTestByText("""
+                   from typing import ParamSpec, Protocol
+                   P = ParamSpec("P")
+                   class Proto(Protocol[P]):
+                       def __call__(self, *args: P.args, **kwargs: P.kwargs) -> None: ...
+                   """);
+  }
+
+  // PY-76850
+  public void testParamSpecComponentInScopeNewStyleGenericClass() {
+    doTestByText("""
+                   class Wrapper[**P]:
+                       def call(self, *args: P.args, **kwargs: P.kwargs) -> None:
+                           pass
+                   """);
+  }
+
+  // PY-76850
+  public void testParamSpecComponentNotInScopeInClass() {
+    doTestByText("""
+                   from typing import ParamSpec
+                   P = ParamSpec("P")
+                   class NoParamSpec:
+                       def call(self, *args: <warning descr="ParamSpec 'P' must be a type parameter of the enclosing callable or class">P</warning>.args, **kwargs: <warning descr="ParamSpec 'P' must be a type parameter of the enclosing callable or class">P</warning>.kwargs) -> None:
+                           pass
+                   """);
+  }
+
+  // PY-76850
+  public void testParamSpecComponentsValidUsage() {
+    doTestByText("""
+                   from typing import Callable, ParamSpec
+                   P = ParamSpec("P")
+
+                   def valid1[**P](*args: P.args, **kwargs: P.kwargs) -> None:
+                       pass
+
+                   def valid2[**P](s: str, *args: P.args, **kwargs: P.kwargs) -> None:
+                       pass
+
+                   def twice(f: Callable[P, int], *args: P.args, **kwargs: P.kwargs) -> int:
+                       return f(*args, **kwargs)
+                   """);
+  }
+
+  // PY-76850
+  public void testAfterParamSpecArgsKwargsParamWithoutAnnotation() {
+    doTestByText("""
+                   from typing import ParamSpec, TypeVar, Callable
+                   P = ParamSpec("P")
+                   T = TypeVar("T")
+                   
+                   def invoke(fn: Callable[P, T], *args: <warning descr="'P.args' and 'P.kwargs' must both be present in the same function signature">P.args</warning>, **kwargs) -> T:
+                       pass
+                   """);
+  }
+
+  // PY-76850
+  public void testIllegalParamSpecUsageForKwargs() {
+    doTestByText("""
+                   from typing import ParamSpec, TypeVar, Callable
+                   P = ParamSpec("P")
+                   def invoke(**kwargs: <warning descr="'P.args' and 'P.kwargs' must both be present in the same function signature"><warning descr="ParamSpec 'P' must be a type parameter of the enclosing callable or class">P</warning>.kwargs</warning>) -> None:
+                       pass
+                   """);
+  }
+
+  public void testExplicitTupleInLiteral() {
+    doTestByText(
+      """
+        from typing import Literal
+        
+        _: Literal[<warning descr="'Literal' may be parameterized with literal ints, byte and unicode strings, bools, Enum values, None, other literal types, or type aliases to other literal types">(1, "a")</warning>]
+        """
     );
   }
 

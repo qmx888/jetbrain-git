@@ -26,7 +26,6 @@ import com.intellij.openapi.extensions.PluginId
 import com.intellij.openapi.progress.ProgressIndicator
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.updateSettings.impl.pluginsAdvertisement.FUSEventSource
-import com.intellij.openapi.util.IntellijInternalApi
 import com.intellij.platform.pluginManager.shared.rpc.PluginInstallerApi
 import com.intellij.platform.pluginManager.shared.rpc.PluginManagerApi
 import com.intellij.platform.project.projectId
@@ -43,7 +42,6 @@ import org.jetbrains.annotations.ApiStatus
 import javax.swing.JComponent
 
 @ApiStatus.Internal
-@IntellijInternalApi
 class BackendUiPluginManagerController() : UiPluginManagerController {
   override fun isEnabled(): Boolean {
     return !TraverseUIMode.getInstance().isActive()
@@ -111,6 +109,17 @@ class BackendUiPluginManagerController() : UiPluginManagerController {
     return awaitForResult { PluginManagerApi.getInstance().enablePlugins(sessionId, descriptorIds, enable, project?.projectId()) }
   }
 
+  override fun markPluginsAsDisabled(pluginIds: List<PluginId>) {
+    awaitForResult { PluginManagerApi.getInstance().markPluginsAsDisabled(pluginIds) }
+  }
+
+  suspend fun disablePluginsWithDependencies(
+    pluginIds: List<PluginId>,
+    project: Project?,
+  ): ApplyPluginsStateResult {
+    return PluginManagerApi.getInstance().disablePluginsWithDependencies(pluginIds, project?.projectId())
+  }
+
   override fun isPluginRequiresUltimateButItIsDisabled(sessionId: String, pluginId: PluginId): Boolean {
     return awaitForResult { PluginManagerApi.getInstance().isPluginRequiresUltimateButItIsDisabled(sessionId, pluginId) }
   }
@@ -168,15 +177,16 @@ class BackendUiPluginManagerController() : UiPluginManagerController {
   }
 
   @OptIn(FlowPreview::class)
-  override fun connectToUpdateServiceWithCounter(sessionId: String, callback: (Int?) -> Unit): PluginUpdatesService {
-    service<BackendRpcCoroutineContext>().coroutineScope.launch {
+  override fun connectToPluginUpdateService(sessionId: String, callback: (List<PluginUiModel>) -> Unit): PluginUpdatesService {
+    val result = RemotePluginUpdatesService(sessionId)
+    result.coroutineScope.launch {
       durable {
-        PluginManagerApi.getInstance().subscribeToUpdatesCount(sessionId).debounce(100).collectLatest {
+        PluginManagerApi.getInstance().subscribeToPluginUpdates(sessionId).debounce(100).collectLatest {
           callback(it)
         }
       }
     }
-    return RemotePluginUpdatesService(sessionId)
+    return result
   }
 
   override fun filterPluginsRequiringUltimateButItsDisabled(pluginIds: List<PluginId>): List<PluginId> {

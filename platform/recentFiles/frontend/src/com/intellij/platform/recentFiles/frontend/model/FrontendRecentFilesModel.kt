@@ -2,6 +2,7 @@
 package com.intellij.platform.recentFiles.frontend.model
 
 import com.intellij.icons.AllIcons
+import com.intellij.ide.ui.UISettings
 import com.intellij.ide.vfs.VirtualFileId
 import com.intellij.ide.vfs.virtualFile
 import com.intellij.openapi.components.Service
@@ -74,8 +75,13 @@ class FrontendRecentFilesModel(private val project: Project) {
   }
 
   private fun considerOpenedEditorWindowsForFiles(filteredModel: List<SwitcherVirtualFile>): List<SwitcherVirtualFile> {
+    // With the tabs disabled, switching between editor windows doesn't work anyway,
+    // so trying to associate the editors with the files just produces annoying duplicate entries. 
+    if (UISettings.getInstance().editorTabPlacement == UISettings.TABS_NONE) return filteredModel
+    
     val editorsByFile = (FileEditorManager.getInstance(project) as? FileEditorManagerImpl)
       ?.getSelectionHistoryList().orEmpty()
+      .filter { (_, editor) -> editor.isShowing }
       .groupBy(
         keySelector = { (file, _) -> file },
         valueTransform = { (_, editor) -> editor }

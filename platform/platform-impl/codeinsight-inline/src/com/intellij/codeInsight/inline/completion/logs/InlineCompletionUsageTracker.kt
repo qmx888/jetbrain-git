@@ -14,7 +14,7 @@ import com.intellij.internal.statistic.eventLog.events.PrimitiveEventField
 import com.intellij.internal.statistic.eventLog.events.VarargEventId
 import com.intellij.internal.statistic.service.fus.collectors.CounterUsagesCollector
 import com.intellij.internal.statistic.utils.PluginInfo
-import com.intellij.util.application
+import com.intellij.openapi.application.runReadActionBlocking
 import kotlinx.serialization.Serializable
 import org.jetbrains.annotations.ApiStatus
 import java.util.concurrent.locks.ReentrantLock
@@ -24,7 +24,7 @@ import kotlin.coroutines.cancellation.CancellationException
 @ApiStatus.Internal
 @Deprecated("will be moved to inline.completion.v2")
 object InlineCompletionUsageTracker : CounterUsagesCollector() {
-  private val GROUP = EventLogGroup("inline.completion", 40)
+  private val GROUP = EventLogGroup("inline.completion", 41)
 
   const val INVOKED_EVENT_ID: String = "invoked"
   const val SHOWN_EVENT_ID: String = "shown"
@@ -171,7 +171,7 @@ object InlineCompletionUsageTracker : CounterUsagesCollector() {
 
     override fun onRequest(event: InlineCompletionEventType.Request): Unit = lock.withLock {
       invocationTracker = InlineCompletionInvocationTracker(event).also {
-        application.runReadAction { it.captureContext(event.request.editor, event.request.endOffset) }
+        runReadActionBlocking { it.captureContext(event.request.editor, event.request.endOffset) }
       }
       showTracker = null // Just in case
     }

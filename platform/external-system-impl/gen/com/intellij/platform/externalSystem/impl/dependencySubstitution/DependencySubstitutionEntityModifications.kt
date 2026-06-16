@@ -3,11 +3,17 @@
 
 package com.intellij.platform.externalSystem.impl.dependencySubstitution
 
+import com.intellij.platform.externalSystem.impl.dependencySubstitution.impl.DependencySubstitutionEntityImpl
 import com.intellij.platform.workspace.jps.entities.DependencyScope
 import com.intellij.platform.workspace.jps.entities.LibraryId
 import com.intellij.platform.workspace.jps.entities.ModuleEntityBuilder
 import com.intellij.platform.workspace.jps.entities.ModuleId
-import com.intellij.platform.workspace.storage.*
+import com.intellij.platform.workspace.storage.EntitySource
+import com.intellij.platform.workspace.storage.EntityType
+import com.intellij.platform.workspace.storage.GeneratedCodeApiVersion
+import com.intellij.platform.workspace.storage.MutableEntityStorage
+import com.intellij.platform.workspace.storage.WorkspaceEntity
+import com.intellij.platform.workspace.storage.WorkspaceEntityBuilder
 import org.jetbrains.annotations.ApiStatus.Internal
 
 @Internal
@@ -22,6 +28,7 @@ interface DependencySubstitutionEntityBuilder : WorkspaceEntityBuilder<Dependenc
 
 internal object DependencySubstitutionEntityType : EntityType<DependencySubstitutionEntity, DependencySubstitutionEntityBuilder>() {
   override val entityClass: Class<DependencySubstitutionEntity> get() = DependencySubstitutionEntity::class.java
+  override val entityImplBuilderClass: Class<*> get() = DependencySubstitutionEntityImpl.Builder::class.java
   operator fun invoke(
     library: LibraryId,
     module: ModuleId,

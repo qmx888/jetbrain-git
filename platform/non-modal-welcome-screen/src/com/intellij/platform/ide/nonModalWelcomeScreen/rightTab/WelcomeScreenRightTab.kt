@@ -2,7 +2,12 @@ package com.intellij.platform.ide.nonModalWelcomeScreen.rightTab
 
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.draganddrop.dragAndDropTarget
+import androidx.compose.foundation.focusable
+import androidx.compose.foundation.hoverable
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsHoveredAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -13,6 +18,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.wrapContentSize
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CornerSize
@@ -31,12 +37,16 @@ import androidx.compose.ui.draganddrop.awtTransferable
 import androidx.compose.ui.draw.blur
 import androidx.compose.ui.focus.FocusDirection
 import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.input.pointer.PointerIcon
+import androidx.compose.ui.input.pointer.pointerHoverIcon
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.intellij.ide.dnd.FileCopyPasteUtil
@@ -46,12 +56,14 @@ import com.intellij.openapi.fileEditor.ex.FileEditorManagerEx
 import com.intellij.openapi.fileEditor.impl.FileEditorOpenOptions
 import com.intellij.openapi.options.advanced.AdvancedSettings
 import com.intellij.openapi.project.Project
-import com.intellij.platform.ide.nonModalWelcomeScreen.GoFileDragAndDropHandler
 import com.intellij.platform.ide.nonModalWelcomeScreen.NON_MODAL_WELCOME_SCREEN_SETTING_ID
 import com.intellij.platform.ide.nonModalWelcomeScreen.NonModalWelcomeScreenBundle
+import com.intellij.platform.ide.nonModalWelcomeScreen.WelcomeScreenComboBoxKind
 import com.intellij.platform.ide.nonModalWelcomeScreen.WelcomeScreenTabUsageCollector
 import com.intellij.platform.ide.nonModalWelcomeScreen.rightTab.WelcomeRightTabContentProvider.FeatureButtonModelWithBackend
+import com.intellij.platform.ide.nonModalWelcomeScreen.rightTab.WelcomeRightTabContentProvider.WelcomeContent
 import com.intellij.platform.ide.nonModalWelcomeScreen.rightTab.WelcomeScreenRightTabComboBoxModel.KeymapModel
+import com.intellij.platform.ide.nonModalWelcomeScreen.rightTab.WelcomeScreenRightTabComboBoxModel.StartupSwitchModel
 import com.intellij.platform.ide.nonModalWelcomeScreen.rightTab.WelcomeScreenRightTabComboBoxModel.ThemeModel
 import com.intellij.platform.ide.nonModalWelcomeScreen.rightTab.components.WelcomeScreenCustomButton
 import com.intellij.platform.ide.nonModalWelcomeScreen.rightTab.components.WelcomeScreenCustomListComboBox
@@ -82,6 +94,7 @@ import org.jetbrains.jewel.ui.theme.colorPalette
 import org.jetbrains.jewel.ui.theme.comboBoxStyle
 import org.jetbrains.jewel.ui.theme.defaultButtonStyle
 import org.jetbrains.jewel.ui.theme.scrollbarStyle
+import java.awt.Cursor
 import java.awt.datatransfer.DataFlavor
 import javax.swing.JComponent
 
@@ -103,7 +116,7 @@ class WelcomeScreenRightTab(
       object : DragAndDropTarget {
         override fun onDrop(event: DragAndDropEvent): Boolean {
           val files = FileCopyPasteUtil.getFiles(event.awtTransferable)
-          return GoFileDragAndDropHandler.openFiles(project, files)
+          return contentProvider.getFileDragAndDropHandler().openFiles(project, files)
         }
       }
     }
@@ -155,6 +168,31 @@ class WelcomeScreenRightTab(
             Spacer(modifier = Modifier.height(32.dp))
 
             FeatureGrid(modifier = Modifier.wrapContentSize(Alignment.Center))
+
+            val additionalComponents = contentProvider.getAdditionalComponents(project)
+            if (additionalComponents.isNotEmpty()) {
+              Spacer(modifier = Modifier.height(24.dp))
+              Column(
+                modifier = Modifier.wrapContentSize(Alignment.Center),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+              ) {
+                for (row in additionalComponents) {
+                  Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(16.dp),
+                  ) {
+                    for (component in row) {
+                      when (component) {
+                        is WelcomeContent.Text -> WelcomeScreenText(component)
+                        is WelcomeContent.Link -> WelcomeScreenLink(component)
+                      }
+                    }
+                  }
+                }
+              }
+            }
+
             Spacer(modifier = Modifier.height(24.dp))
 
             WelcomeScreenRightTabBannerProvider.SingleBanner(project, modifier = Modifier.wrapContentSize(Alignment.Center))
@@ -194,7 +232,7 @@ class WelcomeScreenRightTab(
         it !is FeatureButtonModelWithBackend || it.isAlwaysAvailable || it.featureKey in backendFeatureIds
       }
 
-      for (row in featureModels.chunked(3)) {
+      for (row in featureModels.chunked(contentProvider.buttonsPerRow)) {
         Row(modifier = Modifier.wrapContentSize(Alignment.Center), horizontalArrangement = Arrangement.spacedBy(16.dp)) {
           for (model in row) {
             FeatureButton(model, coroutineScope)
@@ -239,18 +277,80 @@ class WelcomeScreenRightTab(
 
   @Composable
   fun SwitchPanel() {
-    Row(horizontalArrangement = Arrangement.spacedBy(16.dp), modifier = Modifier.padding(bottom = 12.dp)) {
-      InfoPanelItem(themeIconKey,
-                    NonModalWelcomeScreenBundle.message("welcome.screen.right.tab.theme.switch.prefix"),
-                    ThemeModel())
-      InfoPanelItem(AllIconsKeys.General.Keyboard,
-                    NonModalWelcomeScreenBundle.message("welcome.screen.right.tab.keymap.switch.prefix"),
-                    KeymapModel())
+    val additionalButtons = contentProvider.getAdditionalInfoButtonModels(project).map { ButtonInfoPanelModel(it) }
+    val buttons = listOf(
+      ComboBoxInfoPanelModel(themeIconKey,
+                             "welcome.screen.right.tab.theme.switch.prefix",
+                             ThemeModel()),
+      ComboBoxInfoPanelModel(AllIconsKeys.General.Keyboard,
+                             "welcome.screen.right.tab.keymap.switch.prefix",
+                             KeymapModel()),
+      ComboBoxInfoPanelModel(AllIconsKeys.General.Settings,
+                             "welcome.screen.right.tab.startup.switch.prefix",
+                             StartupSwitchModel()),
+    ) + additionalButtons
+
+    val buttonsPerRow = contentProvider.buttonsPerRow
+    val coroutineScope = contentProvider.coroutineScope
+    for (row in buttons.chunked(buttonsPerRow)) {
+      Row(horizontalArrangement = Arrangement.spacedBy(16.dp), modifier = Modifier.padding(bottom = 12.dp)) {
+        for (model in row) {
+          when (model) {
+            is ComboBoxInfoPanelModel -> InfoPanelItem(model.iconKey, model.itemPrefix, model.model, project, getStatisticLogger(model))
+            is ButtonInfoPanelModel -> InfoPanelButton(model.iconKey, model.itemPrefix, model.onClick, coroutineScope)
+          }
+        }
+      }
     }
   }
 
+  private fun getStatisticLogger(comboBoxInfoPanelModel: ComboBoxInfoPanelModel): ((String, Int) -> Unit)? {
+    return when (comboBoxInfoPanelModel.model) {
+      is ThemeModel -> { _, _ ->
+        WelcomeScreenTabUsageCollector.logComboBoxValueChanged(WelcomeScreenComboBoxKind.THEME)
+      }
+      is KeymapModel -> { _, _ ->
+        WelcomeScreenTabUsageCollector.logComboBoxValueChanged(WelcomeScreenComboBoxKind.KEYMAP)
+      }
+      is StartupSwitchModel -> { _, index ->
+        WelcomeScreenTabUsageCollector.logComboBoxValueChanged(WelcomeScreenComboBoxKind.STARTUP)
+        WelcomeScreenTabUsageCollector.logStartupOptionChanged(comboBoxInfoPanelModel.model.items[index])
+      }
+      else -> null
+    }
+  }
+
+
+  sealed interface InfoPanelModel {
+    val iconKey: IconKey
+    val itemPrefix: String
+  }
+
+  private class ComboBoxInfoPanelModel(
+    override val iconKey: IconKey,
+    val itemPrefixKey: String,
+    val model: WelcomeScreenRightTabComboBoxModel<out Any>,
+  ) : InfoPanelModel {
+    override val itemPrefix: String
+      get() = NonModalWelcomeScreenBundle.message(itemPrefixKey)
+  }
+
+  private class ButtonInfoPanelModel(private val model: WelcomeRightTabContentProvider.InfoButtonModel) : InfoPanelModel {
+    override val iconKey: IconKey
+      get() = model.icon
+    override val itemPrefix: String
+      get() = model.text
+    val onClick: (Project, CoroutineScope) -> Unit = model.onClick
+  }
+
   @Composable
-  internal fun InfoPanelItem(iconKey: IconKey, itemPrefix: String, model: WelcomeScreenRightTabComboBoxModel<out Any>) {
+  internal fun InfoPanelItem(
+    iconKey: IconKey,
+    itemPrefix: String,
+    model: WelcomeScreenRightTabComboBoxModel<out Any>,
+    project: Project,
+    afterOnSelectedItemChanged: ((newSelection: String, index: Int) -> Unit)? = null
+  ) {
     Box {
       WelcomeScreenCustomListComboBox(
         iconKey = iconKey,
@@ -259,9 +359,11 @@ class WelcomeScreenRightTab(
         style = CustomComboBoxStyle(),
         maxPopupHeight = 300.dp,
         minPopupWidth = 200.dp,
+        externalUpdateListener = model.externalUpdateListener(project),
         initialSelectedIndex = model.currentItemIndex(),
         onSelectedItemChange = { index, newSelection ->
           model.setByIndex(index, newSelection)
+          afterOnSelectedItemChanged?.invoke(newSelection, index)
         },
       ) { item, isSelected, isActive ->
         SimpleListItem(
@@ -272,6 +374,57 @@ class WelcomeScreenRightTab(
         )
       }
     }
+  }
+
+  @Composable
+  private fun InfoPanelButton(
+    icon: IconKey,
+    text: String,
+    onClick: (Project, CoroutineScope) -> Unit,
+    coroutineScope: CoroutineScope,
+  ) {
+    WelcomeScreenCustomButton(
+      onClick = {
+        onClick(project, coroutineScope)
+      },
+      style = InfoPanelButtonStyle(),
+    ) {
+      Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.focusable(false).focusProperties { canFocus = false }) {
+        Box(contentAlignment = Alignment.Center) {
+          Icon(key = icon, contentDescription = text)
+        }
+        Spacer(modifier = Modifier.width(6.dp))
+        Text(text = text, color = fontColor, maxLines = 1, style = JewelTheme.defaultTextStyle, overflow = TextOverflow.Ellipsis)
+      }
+    }
+  }
+
+  @Composable
+  fun InfoPanelButtonStyle(): ButtonStyle {
+    val defaultButtonStyle = JewelTheme.defaultButtonStyle
+    return ButtonStyle(
+      colors = with(defaultButtonStyle.colors) {
+        ButtonColors(
+          background = SolidColor(Color.Transparent),
+          backgroundDisabled = backgroundDisabled,
+          backgroundFocused = SolidColor(Color.Transparent),
+          backgroundPressed = featureButtonBackgroundPressedColor,
+          backgroundHovered = featureButtonBackgroundHoveredColor,
+          content = content,
+          contentDisabled = contentDisabled,
+          contentFocused = contentFocused,
+          contentPressed = contentPressed,
+          contentHovered = contentHovered,
+          border = border,
+          borderDisabled = borderDisabled,
+          borderFocused = borderFocused,
+          borderPressed = border,
+          borderHovered = border,
+        )
+      },
+      metrics = defaultButtonStyle.metrics,
+      focusOutlineAlignment = defaultButtonStyle.focusOutlineAlignment
+    )
   }
 
   @Composable
@@ -362,6 +515,64 @@ class WelcomeScreenRightTab(
       metrics = customMetrics,
       focusOutlineAlignment = defaultButtonStyle.focusOutlineAlignment
     )
+  }
+
+  @Composable
+  private fun WelcomeScreenText(model: WelcomeContent.Text) {
+    Row(
+      verticalAlignment = Alignment.CenterVertically,
+      horizontalArrangement = Arrangement.spacedBy(4.dp),
+    ) {
+      Text(
+        text = model.text,
+        color = model.tint.takeIf { it != Color.Unspecified } ?: fontColor,
+        fontSize = 13.sp,
+        lineHeight = 16.sp,
+      )
+      model.icon?.let { icon ->
+        Icon(
+          key = icon,
+          contentDescription = null,
+        )
+      }
+    }
+  }
+
+  @Composable
+  private fun WelcomeScreenLink(model: WelcomeContent.Link) {
+    val interactionSource = remember { MutableInteractionSource() }
+    val isHovered by interactionSource.collectIsHoveredAsState()
+    val restingColor = model.tint.takeIf { it != Color.Unspecified } ?: fontColor
+    val textColor = if (isHovered) {
+      model.tintHovered.takeIf { it != Color.Unspecified } ?: restingColor
+    } else {
+      restingColor
+    }
+    Row(
+      verticalAlignment = Alignment.CenterVertically,
+      horizontalArrangement = Arrangement.spacedBy(4.dp),
+      modifier = Modifier
+        .pointerHoverIcon(PointerIcon(Cursor(Cursor.HAND_CURSOR)))
+        .hoverable(interactionSource)
+        .clickable(
+          interactionSource = interactionSource,
+          indication = null,
+          onClick = { model.onClick(project) },
+        ),
+    ) {
+      Text(
+        text = model.text,
+        color = textColor,
+        fontSize = 13.sp,
+        lineHeight = 16.sp,
+      )
+      Icon(
+        key = AllIconsKeys.Ide.External_link_arrow,
+        contentDescription = null,
+        tint = restingColor,
+        modifier = Modifier.size(14.dp),
+      )
+    }
   }
 
 

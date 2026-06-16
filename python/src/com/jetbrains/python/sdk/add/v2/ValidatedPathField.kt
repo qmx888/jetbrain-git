@@ -261,7 +261,7 @@ internal class ValidatedPathField<T, P : PathHolder, VP : ValidatedPath<T, P>>(
   private fun createBrowseFolderListener(browseFolderDialogTitle: @Nls String, isFileSelectionMode: Boolean): ActionListener? {
     val descriptor = getFileChooserDescriptor(browseFolderDialogTitle, isFileSelectionMode)
     val targetBrowserHints = TargetBrowserHints(showLocalFsInBrowser = true, descriptor)
-    val targetEnvironmentConfiguration = (fileSystem as? FileSystem.Target)?.targetEnvironmentConfiguration
+    val targetEnvironmentConfiguration = (fileSystem as? TargetFileSystem)?.targetEnvironmentConfiguration
 
     val listener = if (targetEnvironmentConfiguration == null) {
       BrowseFolderActionListener(this, null, descriptor, fieldAccessor)
@@ -293,7 +293,7 @@ private fun <T, P : PathHolder, V : ValidatedPath<T, P>> Panel.installToolRow(
   installAction: ActionLink,
   validatedPathField: ValidatedPathField<T, P, V>,
 ): Row {
-  val selectExecutableLink = if (fileSystem.isBrowseable) ActionLink(message("sdk.create.custom.select.executable.link")) {
+  val selectExecutableLink = if (fileSystem.isBrowsable) ActionLink(message("sdk.create.custom.select.executable.link")) {
     validatedPathField.button.doClick()
   }
   else null
@@ -317,6 +317,7 @@ internal fun <T, P : PathHolder, VP : ValidatedPath<T, P>> Panel.validatablePath
   missingExecutableText: @Nls String?,
   installAction: ActionLink? = null,
   isFileSelectionMode: Boolean = true,
+  venvExistenceValidationState: ObservableProperty<VenvExistenceValidationState>? = null,
 ): ValidatedPathField<T, P, VP> {
 
   val validatedPathField = ValidatedPathField(
@@ -335,15 +336,28 @@ internal fun <T, P : PathHolder, VP : ValidatedPath<T, P>> Panel.validatablePath
     ).visibleIf(pathValidator.backProperty.transform { it?.pathHolder == null }.and(pathValidator.isDirtyValue.not()))
   }
 
+  val initialValidationRequestor = (validationRequestor
+    and WHEN_PROPERTY_CHANGED(pathValidator.isDirtyValue)
+    and WHEN_PROPERTY_CHANGED(pathValidator.backProperty))
+
+  val finalValidationRequestor = if (venvExistenceValidationState != null) {
+    initialValidationRequestor and WHEN_PROPERTY_CHANGED(venvExistenceValidationState)
+  }
+  else initialValidationRequestor
+
   row(labelText) {
     cell(validatedPathField)
       .align(AlignX.FILL)
-      .validationRequestor(validationRequestor
-                             and WHEN_PROPERTY_CHANGED(pathValidator.isDirtyValue)
-                             and WHEN_PROPERTY_CHANGED(pathValidator.backProperty)
-      )
+      .validationRequestor(finalValidationRequestor)
       .validationOnInput { component ->
         if (!component.isVisible) return@validationOnInput null
+
+        val isVenvOverridden = when (venvExistenceValidationState?.get()) {
+          is VenvExistenceValidationState.Warning -> true
+          is VenvExistenceValidationState.Invisible, is VenvExistenceValidationState.Error, null -> false
+        }
+
+        if (isVenvOverridden) return@validationOnInput null
 
         val pyErrorMessage = pathValidator.backProperty.get()?.validationResult?.errorOrNull?.message
 

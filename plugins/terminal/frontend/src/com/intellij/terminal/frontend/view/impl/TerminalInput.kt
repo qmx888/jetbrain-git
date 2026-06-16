@@ -3,20 +3,16 @@ package com.intellij.terminal.frontend.view.impl
 import com.intellij.openapi.actionSystem.DataKey
 import com.intellij.openapi.diagnostic.logger
 import com.intellij.openapi.diagnostic.trace
-import com.intellij.openapi.editor.event.EditorMouseEvent
 import com.intellij.openapi.util.Key
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineName
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Deferred
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.async
 import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.channels.ClosedSendChannelException
 import kotlinx.coroutines.channels.SendChannel
-import kotlinx.coroutines.future.await
 import kotlinx.coroutines.launch
 import org.jetbrains.plugins.terminal.block.reworked.TerminalSessionModel
 import org.jetbrains.plugins.terminal.block.ui.sanitizeLineSeparators
@@ -28,21 +24,18 @@ import org.jetbrains.plugins.terminal.fus.secondLargest
 import org.jetbrains.plugins.terminal.fus.totalDuration
 import org.jetbrains.plugins.terminal.session.TerminalGridSize
 import org.jetbrains.plugins.terminal.session.impl.TerminalClearBufferEvent
-import org.jetbrains.plugins.terminal.session.impl.TerminalHyperlinkClickedEvent
-import org.jetbrains.plugins.terminal.session.impl.TerminalHyperlinkId
 import org.jetbrains.plugins.terminal.session.impl.TerminalInputEvent
 import org.jetbrains.plugins.terminal.session.impl.TerminalResizeEvent
 import org.jetbrains.plugins.terminal.session.impl.TerminalSession
 import org.jetbrains.plugins.terminal.session.impl.TerminalWriteBytesEvent
+import org.jetbrains.plugins.terminal.util.getNow
 import org.jetbrains.plugins.terminal.view.impl.TerminalSendTextOptions
 import java.awt.event.KeyEvent
 import java.nio.charset.StandardCharsets
-import java.util.concurrent.CompletableFuture
 import kotlin.time.TimeMark
 
-@OptIn(ExperimentalCoroutinesApi::class)
 internal class TerminalInput(
-  private val terminalSessionFuture: CompletableFuture<TerminalSession>,
+  private val terminalSessionDeferred: Deferred<TerminalSession>,
   private val sessionModel: TerminalSessionModel,
   startupFusInfo: TerminalStartupFusInfo?,
   coroutineScope: CoroutineScope,
@@ -64,8 +57,8 @@ internal class TerminalInput(
   )
 
   private val inputChannelDeferred: Deferred<SendChannel<TerminalInputEvent>> =
-    coroutineScope.async(Dispatchers.IO + CoroutineName("Get input channel")) {
-      terminalSessionFuture.await().getInputChannel()
+    coroutineScope.async(CoroutineName("Get input channel")) {
+      terminalSessionDeferred.await().getInputChannel()
     }
 
   private val typingLatencyReporter = BatchLatencyReporter(batchSize = 50) { samples ->
@@ -114,14 +107,23 @@ internal class TerminalInput(
     }
   }
 
-  fun sendText(options: TerminalSendTextOptions) {
+  fun sendText(options: TerminalSendTextOptions): Boolean {
     var text = options.text
     if (text.isEmpty()) {
-      return
+      return false
     }
+    val terminalState = sessionModel.terminalState.value
+    if (options.requireBracketedPasteMode && !terminalState.isBracketedPasteMode) {
+      return false
+    }
+    val endBytes = if (options.sendEndKeyBeforeText) encodingManager.getCode(KeyEvent.VK_END, 0) ?: return false else null
+    if (endBytes != null) {
+      sendBytes(endBytes)
+    }
+
     text = sanitizeLineSeparators(text)
 
-    if (options.useBracketedPasteMode && sessionModel.terminalState.value.isBracketedPasteMode) {
+    if (options.useBracketedPasteMode && terminalState.isBracketedPasteMode) {
       text = "\u001b[200~$text\u001b[201~"
     }
 
@@ -130,6 +132,7 @@ internal class TerminalInput(
     }
 
     sendString(text)
+    return true
   }
 
   fun sendString(data: String) {
@@ -178,13 +181,9 @@ internal class TerminalInput(
    * Note that resize events sent before the terminal session is initialized will be ignored.
    */
   fun sendResize(newSize: TerminalGridSize) {
-    terminalSessionFuture.getNow(null) ?: return
+    terminalSessionDeferred.getNow() ?: return
     val event = TerminalResizeEvent(newSize)
     sendEvent(InputEventSubmission(event))
-  }
-  
-  fun sendLinkClicked(isInAlternateBuffer: Boolean, hyperlinkId: TerminalHyperlinkId, event: EditorMouseEvent) {
-    sendEvent(InputEventSubmission(TerminalHyperlinkClickedEvent(isInAlternateBuffer, hyperlinkId, event)))
   }
 
   private fun sendEvent(event: InputEventSubmission) {

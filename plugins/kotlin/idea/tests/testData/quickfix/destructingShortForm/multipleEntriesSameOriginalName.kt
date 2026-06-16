@@ -1,6 +1,5 @@
-// "Convert to a full name-based destructuring form" "true"
+// "Convert to a full name-based destructuring form" "false"
 // COMPILER_ARGUMENTS: -Xname-based-destructuring=only-syntax
-// IGNORE_K1
 // WITH_STDLIB
 
 fun <A, B, C> test(triple: Triple<A, B, C>) {
@@ -8,4 +7,4 @@ fun <A, B, C> test(triple: Triple<A, B, C>) {
     // Multiple entries mapping to different original names - should work
 }
 
-// FUS_K2_QUICKFIX_NAME: org.jetbrains.kotlin.idea.k2.codeinsight.inspections.ConvertNameBasedDestructuringShortFormToFullFix
+// FUS_K2_QUICKFIX_NAME: org.jetbrains.kotlin.idea.codeInsight.inspections.ConvertNameBasedDestructuringShortFormToFullFix

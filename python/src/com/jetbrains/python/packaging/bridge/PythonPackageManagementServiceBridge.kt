@@ -15,7 +15,6 @@ import com.intellij.webcore.packaging.InstalledPackage
 import com.intellij.webcore.packaging.PackageVersionComparator
 import com.intellij.webcore.packaging.RepoPackage
 import com.jetbrains.python.PyBundle
-import com.jetbrains.python.getOrThrow
 import com.jetbrains.python.isCondaVirtualEnv
 import com.jetbrains.python.packaging.common.PythonPackageDetails
 import com.jetbrains.python.packaging.common.PythonSimplePackageDetails
@@ -23,7 +22,7 @@ import com.jetbrains.python.packaging.management.PythonPackageManager
 import com.jetbrains.python.packaging.management.ui.PythonPackageManagerUI
 import com.jetbrains.python.packaging.management.ui.installPackageBackground
 import com.jetbrains.python.packaging.pyRequirementVersionSpec
-import com.jetbrains.python.packaging.repository.PyPIPackageRepository
+import com.jetbrains.python.packaging.repository.PyPiPackageRepository
 import com.jetbrains.python.packaging.repository.PyPackageRepository
 import com.jetbrains.python.packaging.requirement.PyRequirementRelation
 import com.jetbrains.python.packaging.toolwindow.PyPackagingToolWindowService
@@ -33,7 +32,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
 
-class PythonPackageManagementServiceBridge(project: Project, sdk: Sdk) : PyPackageManagementService(project, sdk), Disposable {
+internal class PythonPackageManagementServiceBridge(project: Project, sdk: Sdk) : PyPackageManagementService(project, sdk), Disposable {
 
   private val scope = project.service<PyPackagingToolWindowService>().serviceScope
 
@@ -64,16 +63,11 @@ class PythonPackageManagementServiceBridge(project: Project, sdk: Sdk) : PyPacka
     return getAllPackagesCached()
   }
 
-  private fun createRepoPackage(pkg: String, repository: PyPackageRepository): RepoPackage {
-    val repositoryUrl = repository.repositoryUrl.takeIf { it != PyPIPackageRepository.repositoryUrl }
-    return RepoPackage(pkg, repositoryUrl, null)
-  }
-
   override fun getAllPackagesCached(): List<RepoPackage> {
-    val packages = repositoryManager.repositories.flatMap { repo ->
-      repo.getPackages().map { createRepoPackage(it, repo) }
+    val packages = runWithModalBlockingOrInBackground(project, PyBundle.message("python.packaging.list.packages")) {
+      manager.listInstalledPackages()
     }
-    return packages
+    return packages.map { RepoPackage(it.name, null, null) }
   }
 
   override fun reloadAllPackages(): List<RepoPackage> {
@@ -106,16 +100,20 @@ class PythonPackageManagementServiceBridge(project: Project, sdk: Sdk) : PyPacka
 
 
   override fun fetchPackageVersions(packageName: String, consumer: CatchingConsumer<in List<String>, in Exception>) {
-    scope.launch {
-      val details = repositoryManager.getPackageDetails(packageName, null).getOrThrow()
-      consumer.consume(details.availableVersions.sortedWith(PackageVersionComparator.VERSION_COMPARATOR.reversed()))
+    scope.launch(Dispatchers.IO + ModalityState.current().asContextElement()) {
+      when (val result = repositoryManager.getPackageDetails(packageName, null)) {
+        is com.jetbrains.python.Result.Success -> consumer.consume(result.result.availableVersions.sortedWith(PackageVersionComparator.VERSION_COMPARATOR.reversed()))
+        is com.jetbrains.python.Result.Failure -> consumer.consume(Exception(result.error.message))
+      }
     }
   }
 
   override fun fetchPackageDetails(packageName: String, consumer: CatchingConsumer<in String, in Exception>) {
-    scope.launch {
-      val details = repositoryManager.getPackageDetails(packageName, null).getOrThrow()
-      consumer.consume(buildDescription(details))
+    scope.launch(Dispatchers.IO + ModalityState.current().asContextElement()) {
+      when (val result = repositoryManager.getPackageDetails(packageName, null)) {
+        is com.jetbrains.python.Result.Success -> consumer.consume(buildDescription(result.result))
+        is com.jetbrains.python.Result.Failure -> consumer.consume(Exception(result.error.message))
+      }
     }
   }
 
@@ -124,7 +122,7 @@ class PythonPackageManagementServiceBridge(project: Project, sdk: Sdk) : PyPacka
   }
 
   override fun fetchLatestVersion(pkg: InstalledPackage, consumer: CatchingConsumer<in String, in Exception>) {
-    scope.launch {
+    scope.launch(Dispatchers.IO + ModalityState.current().asContextElement()) {
       val latestVersion = repositoryManager.getLatestVersion(pkg.name, null)?.presentableText
       consumer.consume(latestVersion)
     }

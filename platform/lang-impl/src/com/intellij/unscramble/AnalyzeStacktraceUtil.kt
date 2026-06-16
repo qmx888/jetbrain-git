@@ -8,13 +8,11 @@ import com.intellij.execution.impl.ConsoleViewImpl
 import com.intellij.execution.impl.ConsoleViewUtil
 import com.intellij.execution.ui.ConsoleView
 import com.intellij.execution.ui.ConsoleViewContentType
-import com.intellij.execution.ui.ExecutionConsole
 import com.intellij.execution.ui.NoStackTraceFoldingPanel
 import com.intellij.execution.ui.RunContentDescriptor
 import com.intellij.execution.ui.RunContentManager
 import com.intellij.lang.LangBundle
 import com.intellij.openapi.Disposable
-import com.intellij.openapi.actionSystem.ActionGroup
 import com.intellij.openapi.actionSystem.ActionManager
 import com.intellij.openapi.actionSystem.ActionPlaces
 import com.intellij.openapi.actionSystem.CommonDataKeys
@@ -55,9 +53,14 @@ class AnalyzeStacktraceUtil private constructor() {
 
     @JvmStatic
     fun printStacktrace(consoleView: ConsoleView, unscrambledTrace: String) {
+      printStacktrace(consoleView, unscrambledTrace, ConsoleViewContentType.ERROR_OUTPUT)
+    }
+
+    @JvmStatic
+    fun printStacktrace(consoleView: ConsoleView, unscrambledTrace: String, consoleViewContentType: ConsoleViewContentType) {
       ThreadingAssertions.assertEventDispatchThread()
       consoleView.clear()
-      consoleView.print(unscrambledTrace + "\n", ConsoleViewContentType.ERROR_OUTPUT)
+      consoleView.print(unscrambledTrace + "\n", consoleViewContentType)
       consoleView.scrollTo(0)
     }
 
@@ -96,14 +99,6 @@ class AnalyzeStacktraceUtil private constructor() {
           }
         }
 
-      for (action in consoleView.createConsoleActions()) {
-        toolbarActions.add(action)
-      }
-      val console = consoleView as ConsoleViewImpl
-      ConsoleViewUtil.enableReplaceActionForConsoleViewEditor(console.editor!!)
-      console.editor!!.getSettings().setCaretRowShown(true)
-      toolbarActions.add(ActionManager.getInstance().getAction("AnalyzeStacktraceToolbar"))
-
       if (withExecutor) {
         val executor = DefaultRunExecutor.getRunExecutorInstance()
         val runContentManager = RunContentManager.getInstance(project)
@@ -112,7 +107,8 @@ class AnalyzeStacktraceUtil private constructor() {
         for (provider in EP_CONTENT_PROVIDER.extensionList) {
           runWithModalProgressBlocking(project, LangBundle.message("unscramble.progress.title.analyzing.stacktrace")) {
             provider.createRunTabDescriptor(project, text)?.let { contentDescriptor ->
-              Disposer.register(descriptor, contentDescriptor)
+              // do not register on parent descriptor, the tab will break on parent close
+              Disposer.register(project, contentDescriptor)
               withContext(Dispatchers.EDT) {
                 runContentManager.showRunContent(executor, contentDescriptor)
               }
@@ -153,7 +149,7 @@ class AnalyzeStacktraceUtil private constructor() {
     fun createConsoleComponent(consoleView: ConsoleView?, toolbarActions: DefaultActionGroup?): JComponent?
   }
 
-  private class MyConsolePanel(consoleView: ExecutionConsole, toolbarActions: ActionGroup) : JPanel(BorderLayout()), NoStackTraceFoldingPanel {
+  private class MyConsolePanel(consoleView: ConsoleView, toolbarActions: DefaultActionGroup) : JPanel(BorderLayout()), NoStackTraceFoldingPanel {
     init {
       val toolbarPanel = JPanel(BorderLayout())
       val toolbar = ActionManager.getInstance().createActionToolbar(ActionPlaces.ANALYZE_STACKTRACE_PANEL_TOOLBAR, toolbarActions, false)
@@ -161,6 +157,15 @@ class AnalyzeStacktraceUtil private constructor() {
       toolbarPanel.add(toolbar.getComponent())
       add(toolbarPanel, BorderLayout.WEST)
       add(consoleView.getComponent(), BorderLayout.CENTER)
+
+      for (action in consoleView.createConsoleActions()) {
+        toolbarActions.add(action)
+      }
+
+      val console = consoleView as ConsoleViewImpl
+      ConsoleViewUtil.enableReplaceActionForConsoleViewEditor(console.editor!!)
+      console.editor!!.getSettings().setCaretRowShown(true)
+      toolbarActions.add(ActionManager.getInstance().getAction("AnalyzeStacktraceToolbar"))
     }
   }
 

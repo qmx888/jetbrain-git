@@ -20,7 +20,6 @@ import com.intellij.openapi.extensions.PluginId
 import com.intellij.openapi.progress.ProgressIndicator
 import com.intellij.openapi.progress.runBlockingMaybeCancellable
 import com.intellij.openapi.project.Project
-import com.intellij.openapi.util.IntellijInternalApi
 import com.intellij.openapi.util.registry.Registry
 import com.intellij.util.concurrency.annotations.RequiresBackgroundThread
 import kotlinx.coroutines.CoroutineScope
@@ -37,7 +36,6 @@ import javax.swing.JComponent
  */
 @Service
 @ApiStatus.Internal
-@IntellijInternalApi
 class UiPluginManager {
   suspend fun getPlugins(): List<PluginUiModel> {
     return getController().getPlugins()
@@ -147,6 +145,15 @@ class UiPluginManager {
     return getController().enablePlugins(sessionId, descriptorIds, enable, project)
   }
 
+  /**
+   * Marks the plugins with provided IDs as disabled.
+   * If the IDE is running in remove development mode, this will affect both backend and the frontend processes.
+   * Note that this function doesn't actually unload the plugins. The changes will take effect after the IDE restarts.
+   */
+  fun markPluginsAsDisabled(pluginIds: List<PluginId>) {
+    getController().markPluginsAsDisabled(pluginIds)
+  }
+
   suspend fun prepareToUninstall(pluginsToUninstall: List<PluginId>): PrepareToUninstallResult {
     return getController().prepareToUninstall(pluginsToUninstall)
   }
@@ -244,7 +251,7 @@ class UiPluginManager {
   }
 
   fun subscribeToUpdatesCount(sessionId: String, callback: (Int?) -> Unit): PluginUpdatesService {
-    return getController().connectToUpdateServiceWithCounter(sessionId, callback)
+    return getController().connectToPluginUpdateService(sessionId, { updatedPlugins -> callback(updatedPlugins?.size ?: 0)})
   }
 
   companion object {

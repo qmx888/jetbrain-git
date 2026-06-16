@@ -23,7 +23,7 @@ import com.intellij.polySymbols.query.PolySymbolNameMatchQueryParams
 import com.intellij.polySymbols.query.PolySymbolQueryExecutor
 import com.intellij.polySymbols.query.PolySymbolQueryStack
 import com.intellij.polySymbols.query.PolySymbolScope
-import com.intellij.polySymbols.search.PsiSourcedPolySymbol
+import com.intellij.polySymbols.search.PsiLinkedPolySymbol
 import com.intellij.psi.PsiElement
 
 class CustomElementsClassOrMixinDeclarationAdapter private constructor(
@@ -62,7 +62,7 @@ class CustomElementsClassOrMixinDeclarationAdapter private constructor(
   private class CustomElementClassOrMixinDeclarationSymbol(
     private val base: CustomElementsClassOrMixinDeclarationAdapter,
     private val queryExecutor: PolySymbolQueryExecutor,
-  ) : CustomElementsSymbol, PsiSourcedPolySymbol {
+  ) : CustomElementsSymbol, PsiLinkedPolySymbol {
 
     private var _superContributions: List<PolySymbol>? = null
 
@@ -71,10 +71,8 @@ class CustomElementsClassOrMixinDeclarationAdapter private constructor(
               ?: (base.declaration.mixins + listOfNotNull(base.declaration.superclass))
                 .also { _superContributions = emptyList() }
                 .flatMap { it.resolve(origin, queryExecutor) }
-                .toList()
+                .filterIsInstance<CustomElementsSymbol>()
                 .also { contributions -> _superContributions = contributions }
-
-    override fun getModificationCount(): Long = 0
 
     override val origin: CustomElementsJsonOrigin
       get() = base.origin
@@ -88,9 +86,7 @@ class CustomElementsClassOrMixinDeclarationAdapter private constructor(
     override val description: String?
       get() = (base.declaration.description?.takeIf { it.isNotBlank() } ?: base.declaration.summary)
                 ?.let { origin.renderDescription(it) }
-              ?: superContributions.asSequence()
-                .mapNotNull { (it as? CustomElementsSymbol)?.description }
-                .firstOrNull()
+              ?: superContributions.firstNotNullOfOrNull { (it as? CustomElementsSymbol)?.description }
 
     override val apiStatus: PolySymbolApiStatus
       get() = base.declaration.deprecated.toApiStatus(origin) ?: PolySymbolApiStatus.Stable
@@ -101,7 +97,7 @@ class CustomElementsClassOrMixinDeclarationAdapter private constructor(
         .plus(this)
         .toList()
 
-    override val source: PsiElement?
+    override val linkedElement: PsiElement?
       get() = base.declaration.source?.let { origin.resolveSourceSymbol(it, base.cacheHolder) }
 
     override fun createPointer(): Pointer<CustomElementClassOrMixinDeclarationSymbol> {
@@ -112,6 +108,18 @@ class CustomElementsClassOrMixinDeclarationAdapter private constructor(
         val base = basePtr.dereference() ?: return@Pointer null
         base.withQueryExecutorContext(queryExecutor) as CustomElementClassOrMixinDeclarationSymbol
       }
+    }
+
+    override fun equals(other: Any?): Boolean =
+      other === this
+      || other is CustomElementClassOrMixinDeclarationSymbol
+      && other.base == base
+      && other.queryExecutor == queryExecutor
+
+    override fun hashCode(): Int {
+      var result = base.hashCode()
+      result = 31 * result + queryExecutor.hashCode()
+      return result
     }
 
     override fun getMatchingSymbols(

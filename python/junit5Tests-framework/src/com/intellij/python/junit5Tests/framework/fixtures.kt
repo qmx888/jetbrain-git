@@ -10,6 +10,8 @@ import com.intellij.psi.PsiDirectory
 import com.intellij.psi.PsiFile
 import com.intellij.testFramework.junit5.fixture.TestFixture
 import com.intellij.testFramework.junit5.fixture.testFixture
+import com.jetbrains.python.errorProcessing.ErrorSink
+import com.jetbrains.python.errorProcessing.PyErrorDetail
 import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.cancel
@@ -40,6 +42,33 @@ fun applicationScope(name: String = UUID.randomUUID().toString()): TestFixture<C
     unhandledException?.let {
       throw it
     }
+  }
+}
+
+/**
+ * [ErrorSink] that collects errors into a list.
+ * On teardown, asserts that no unhandled errors remain.
+ * Use [errors] to inspect collected errors and [clear] to acknowledge them.
+ */
+@TestOnly
+class CollectingErrorSink internal constructor() : ErrorSink {
+  val errors: List<PyErrorDetail>
+    field = mutableListOf()
+
+  override suspend fun emit(value: PyErrorDetail) {
+    errors.add(value)
+  }
+
+  fun clear() {
+    errors.clear()
+  }
+}
+
+@TestOnly
+fun errorSinkFixture(): TestFixture<CollectingErrorSink> = testFixture {
+  val sink = CollectingErrorSink()
+  initialized(sink) {
+    check(sink.errors.isEmpty()) { "Unhandled errors in ErrorSink: ${sink.errors}" }
   }
 }
 

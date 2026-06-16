@@ -15,6 +15,7 @@ import kotlinx.coroutines.channels.consumeEach
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.serialization.KSerializer
+import org.jetbrains.annotations.ApiStatus
 import kotlin.concurrent.atomics.AtomicReference
 import kotlin.concurrent.atomics.fetchAndUpdate
 import kotlin.concurrent.atomics.updateAndFetch
@@ -23,6 +24,7 @@ import kotlin.coroutines.resumeWithException
 import kotlin.math.max
 import kotlin.math.min
 
+@ApiStatus.Internal
 data class RpcToken(val token: UID) : CoroutineContext.Element {
   companion object : CoroutineContext.Key<RpcToken>
 
@@ -35,11 +37,13 @@ private object RpcStream {
   val logger = logger<RpcStream>()
 }
 
+@ApiStatus.Internal
 sealed class StreamDirection {
   class ToRemote(val channel: ReceiveChannel<Any?>) : StreamDirection()
   class FromRemote(val channel: SendChannel<Any?>) : StreamDirection()
 }
 
+@ApiStatus.Internal
 class StreamDescriptor(
   val displayName: String,
   val uid: UID,
@@ -53,6 +57,7 @@ class StreamDescriptor(
   }
 }
 
+@ApiStatus.Internal
 class Budget(initial: Int) {
   private val state = AtomicReference(State(null, initial, null))
 
@@ -108,10 +113,12 @@ class Budget(initial: Int) {
   }
 }
 
+@ApiStatus.Internal
 sealed class InternalStreamMessage {
   data class Payload(val payload: Any?) : InternalStreamMessage()
 }
 
+@ApiStatus.Internal
 sealed class InternalStreamDescriptor {
   abstract val route: UID
   abstract val token: RpcToken?
@@ -186,6 +193,7 @@ sealed class InternalStreamDescriptor {
   }
 }
 
+@ApiStatus.Internal
 interface PrefetchStrategy {
   fun streamStarted(): Int
   fun messageReceived(requested: Int, remaining: Int): Int?
@@ -215,6 +223,7 @@ interface PrefetchStrategy {
   }
 }
 
+@ApiStatus.Internal
 fun serveStream(
   origin: UID,
   coroutineScope: CoroutineScope,
@@ -328,6 +337,10 @@ fun serveStream(
             var requested = prefetchStrategy.streamStarted()
             var remaining = requested
             require(requested > 0)
+            // announce the consumer symmetrically to the producer's StreamInit:
+            // if the producer has already abandoned this stream, it will respond with StreamClosed
+            // and we won't linger waiting for data that will never arrive (StreamNext alone is ignored for unregistered streams)
+            sendMessage(RpcMessage.StreamInit(streamId = descriptor.uid))
             sendMessage(RpcMessage.StreamNext(descriptor.uid, requested))
             descriptor.bufferedChannel.consumeEach { each ->
               RpcStream.logger.trace { "Channel ${descriptor.uid} ${descriptor.displayName} processes message $each" }

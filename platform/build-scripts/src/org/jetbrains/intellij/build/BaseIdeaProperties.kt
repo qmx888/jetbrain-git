@@ -34,15 +34,15 @@ val IDEA_BUNDLED_PLUGINS: PersistentList<String> = REBASED_BUNDLED_PLUGINS + per
   "intellij.json",
   "intellij.yaml",
   "intellij.html.tools",
-  "intellij.tasks.core",
   "intellij.repository.search",
-  "intellij.maven",
+  "intellij.maven.plugin",
   "intellij.gradle.plugin",
   "intellij.android.gradle.declarative.lang.ide",
   "intellij.android.gradle.dsl",
   "intellij.gradle.java.plugin",
   "intellij.vcs.svn",
   "intellij.vcs.hg",
+  "intellij.groovy.scripting",
   "intellij.groovy",
   "intellij.groovy.live.templates",
   "intellij.junit",
@@ -52,9 +52,9 @@ val IDEA_BUNDLED_PLUGINS: PersistentList<String> = REBASED_BUNDLED_PLUGINS + per
   "intellij.java.coverage",
   "intellij.java.decompiler",
   "intellij.eclipse",
-  "intellij.java.debugger.streams",
   "intellij.sh.plugin",
   "intellij.markdown",
+  "intellij.mermaid",
   "intellij.mcpserver",
   "intellij.webp",
   "intellij.grazie",
@@ -68,7 +68,7 @@ val IDEA_BUNDLED_PLUGINS: PersistentList<String> = REBASED_BUNDLED_PLUGINS + per
 )
 
 val CE_CLASS_VERSIONS: Map<String, String> = mapOf(
-  "" to "21",
+  "" to "25",
   "lib/idea_rt.jar" to "1.8",
   "lib/forms_rt.jar" to "1.8",
   "lib/annotations.jar" to "1.8",
@@ -80,10 +80,7 @@ val CE_CLASS_VERSIONS: Map<String, String> = mapOf(
 fun configurePropertiesForAllEditionsOfIntelliJIdea(properties: JetBrainsProductProperties) {
   properties.productLayout.addPlatformSpec { layout, _ ->
     layout.withModule("intellij.java.ide.resources")
-
-    if (!properties.productLayout.productApiModules.contains("intellij.jsp.base")) {
-      layout.withModule("intellij.jsp.base")
-    }
+    layout.withModule("intellij.jsp.base")
 
     //todo currently intellij.platform.testFramework included into idea.jar depends on this jar so it cannot be moved to java plugin
     layout.withModule("intellij.java.rt", "idea_rt.jar")
@@ -104,8 +101,6 @@ fun configurePropertiesForAllEditionsOfIntelliJIdea(properties: JetBrainsProduct
     layout.withoutProjectLibrary("jetbrains.qodana.sarif.converter")
     layout.withoutProjectLibrary("jetbrains.qodana.web.ui")
     layout.withoutProjectLibrary("qodana-sarif")
-    // todo it is a quick fix - fix the root cause
-    layout.withoutProjectLibrary("assertJ")
     layout.withoutProjectLibrary("hamcrest")
   }
 

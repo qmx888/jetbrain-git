@@ -2,7 +2,7 @@
 package com.intellij.vcs.commit
 
 import com.intellij.history.LocalHistory
-import com.intellij.openapi.application.runReadAction
+import com.intellij.openapi.application.runReadActionBlocking
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.util.Key
 import com.intellij.openapi.util.NlsContexts
@@ -76,7 +76,7 @@ open class LocalChangesCommitter(
 
   private fun refreshChanges() {
     try {
-      val refreshAction = runReadAction { LocalHistory.getInstance().startAction(localHistoryActionName) }
+      val refreshAction = runReadActionBlocking { LocalHistory.getInstance().startAction(localHistoryActionName) }
 
       val toRefresh = mutableListOf<Change>()
       val additionalPathsToRefresh = mutableListOf<FilePath>()
@@ -147,6 +147,6 @@ private class ChangeListDataCleaner(val committer: LocalChangesCommitter) : Comm
 
 @ApiStatus.Internal
 fun getLocalHistoryEventName(commitContext: CommitContext, commitMessage: String): @NlsContexts.Label String {
-  if (commitContext.isAmendCommitMode) return VcsBundle.message("activity.name.amend.message", commitMessage)
+  if (commitContext.commitToAmend !is CommitToAmend.None) return VcsBundle.message("activity.name.amend.message", commitMessage)
   return VcsBundle.message("activity.name.commit.message", commitMessage)
 }

@@ -24,6 +24,7 @@ import com.intellij.openapi.util.Key
 import com.intellij.openapi.util.TextRange
 import com.intellij.openapi.util.getOrCreateUserDataUnsafe
 import com.intellij.polySymbols.PolySymbol
+import com.intellij.polySymbols.PolySymbol.TextAttributesKeyProperty
 import com.intellij.polySymbols.PolySymbolKind
 import com.intellij.polySymbols.PolySymbolNameSegment
 import com.intellij.polySymbols.PolySymbolNameSegment.MatchProblem
@@ -64,6 +65,11 @@ internal class PolySymbolHighlightingAnnotator : Annotator {
       PsiSymbolReferenceService.getService().getReferences(element, PolySymbolReference::class.java)
         .filter { it.getProblems().isNotEmpty() }
         .forEach { ref -> annotateReference(ref, holder) }
+
+      // The automatic symbol-kind highlighting below is cosmetic (SYMBOL_TYPE_SEVERITY) and is
+      // discarded by the batch Annotator inspection, so skip its (non-trivial) computation in batch
+      // mode. The reference problems reported above are real diagnostics and must still run.
+      if (holder.isBatchMode()) return
 
       // For symbols contributed through PsiPolySymbolReferenceProvider and PolySymbolDeclarationProvider
       // provide automatic symbol kind highlighting
@@ -129,8 +135,7 @@ internal class PolySymbolHighlightingAnnotator : Annotator {
             PolySymbolHighlightingCustomizer.getSymbolTextAttributes(host, symbol, depth)
               ?.let { return@mapNotNull it }
 
-            symbol[PolySymbol.PROP_IJ_TEXT_ATTRIBUTES_KEY]
-              ?.let { TextAttributesKey.find(it) }
+            symbol[TextAttributesKeyProperty]
               ?.let { return@mapNotNull it }
 
             if (symbol.kind != parentKind)
@@ -244,7 +249,7 @@ internal class PolySymbolHighlightingAnnotator : Annotator {
   ): List<InspectionToolInfo> =
     symbolKinds
       .mapNotNull { symbolType ->
-        PolySymbolInspectionToolMappingEP.Companion.get(symbolType.namespace, symbolType.kindName, problemKind)?.toolShortName
+        PolySymbolInspectionToolMappingEP.get(symbolType.namespace, symbolType.kindName, problemKind)?.toolShortName
       }.map {
         map.computeIfAbsent(it) { createToolInfo(it, holder.currentAnnotationSession.file) }
       }

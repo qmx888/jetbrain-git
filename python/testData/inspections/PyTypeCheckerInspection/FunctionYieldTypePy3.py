@@ -46,7 +46,7 @@ def l() -> Generator[None, int, None]:
     x: float = yield
 
 def m() -> Generator[None, float, None]:
-    yield from <warning descr="Expected send type 'float', got 'int' instead">l()</warning>
+    yield from <warning descr="Expected send type 'float | int', got 'int' instead">l()</warning>
     
 def n() -> Generator[None, float, None]:
   x: float = yield
@@ -66,7 +66,7 @@ async def r() -> AsyncGenerator[int]:
     yield 42
     
 def s() -> Generator[int]:
-    yield from <warning descr="Cannot yield from 'AsyncGenerator[int, None]', use async for instead">r()</warning>
+    yield from <warning descr="Cannot yield from 'AsyncGenerator[int, None]', use 'async for' instead">r()</warning>
     
 def t() -> object: # no error here
     yield None # no error here

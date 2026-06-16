@@ -15,37 +15,86 @@
  */
 package org.jetbrains.idea.maven.project.importing
 
-import com.intellij.openapi.application.edtWriteAction
+import com.intellij.maven.testFramework.fixtures.MavenVersionArguments
+import com.intellij.maven.testFramework.fixtures.assertUnorderedElementsAreEqual
+import com.intellij.maven.testFramework.fixtures.assertUnorderedPathsAreEqual
+import com.intellij.maven.testFramework.fixtures.assumeModel_4_0_0
+import com.intellij.maven.testFramework.fixtures.createModulePom
+import com.intellij.maven.testFramework.fixtures.createProfilesXmlOldStyle
+import com.intellij.maven.testFramework.fixtures.createProjectPom
+import com.intellij.maven.testFramework.fixtures.importProjectAsync
+import com.intellij.maven.testFramework.fixtures.importProjectWithProfiles
+import com.intellij.maven.testFramework.fixtures.importProjectsAsync
+import com.intellij.maven.testFramework.fixtures.mavenGeneralSettings
+import com.intellij.maven.testFramework.fixtures.mavenImportingFixture
+import com.intellij.maven.testFramework.fixtures.pathFromBasedir
+import com.intellij.maven.testFramework.fixtures.projectPath
+import com.intellij.maven.testFramework.fixtures.testRootDisposable
+import com.intellij.maven.testFramework.fixtures.updateAllProjects
+import com.intellij.maven.testFramework.fixtures.updateModulePom
+import com.intellij.maven.testFramework.fixtures.updateProjectPom
+import com.intellij.maven.testFramework.fixtures.updateSettingsXml
 import com.intellij.openapi.util.io.FileUtil
 import com.intellij.testFramework.PlatformTestUtil
 import com.intellij.testFramework.UsefulTestCase
+import com.intellij.testFramework.UsefulTestCase.assertEmpty
+import com.intellij.testFramework.UsefulTestCase.assertSameElements
+import com.intellij.testFramework.UsefulTestCase.assertSize
 import com.intellij.testFramework.VfsTestUtil
+import com.intellij.testFramework.junit5.TestApplication
 import kotlinx.coroutines.runBlocking
+import org.jetbrains.idea.maven.fixtures.MyLoggingListener
+import org.jetbrains.idea.maven.fixtures.deleteProject
+import org.jetbrains.idea.maven.fixtures.log
+import org.jetbrains.idea.maven.fixtures.mavenEmbedderWrappers
+import org.jetbrains.idea.maven.fixtures.rawProgressReporter
+import org.jetbrains.idea.maven.fixtures.resolve
+import org.jetbrains.idea.maven.fixtures.tree
+import org.jetbrains.idea.maven.fixtures.update
+import org.jetbrains.idea.maven.fixtures.updateAll
+import org.jetbrains.idea.maven.fixtures.updateTimestamps
+import org.jetbrains.idea.maven.fixtures.waitForImportWithinTimeout
 import org.jetbrains.idea.maven.model.MavenExplicitProfiles
 import org.jetbrains.idea.maven.model.MavenId
 import org.jetbrains.idea.maven.project.MavenProject
 import org.jetbrains.idea.maven.project.MavenProjectsTree
-import org.junit.Test
+import org.junit.jupiter.api.Assertions.assertEquals
+import org.junit.jupiter.api.Assertions.assertFalse
+import org.junit.jupiter.api.Assertions.assertNull
+import org.junit.jupiter.api.Assertions.assertSame
+import org.junit.jupiter.api.Assertions.assertTrue
+import org.junit.jupiter.api.Test
+import org.junit.jupiter.params.ParameterizedClass
+import org.junit.jupiter.params.provider.ArgumentsSource
 import java.util.Arrays
 import java.util.Set
 
-class MavenProjectsTreeReadingTest : MavenProjectsTreeTestCase() {
+@TestApplication
+@ParameterizedClass
+@ArgumentsSource(MavenVersionArguments::class)
+class MavenProjectsTreeReadingTest(mavenVersion: String, modelVersion: String) {
+
+  private val maven by mavenImportingFixture(
+    mavenVersion = mavenVersion,
+    modelVersion = modelVersion
+  )
+  
   @Test
   fun testTwoRootProjects() = runBlocking {
-    val m1 = createModulePom("m1",
+    val m1 = maven.createModulePom("m1",
                              """
                              <groupId>test</groupId>
                              <artifactId>m1</artifactId>
                              <version>1</version>
                              """.trimIndent())
-    val m2 = createModulePom("m2",
+    val m2 = maven.createModulePom("m2",
                              """
                              <groupId>test</groupId>
                              <artifactId>m2</artifactId>
                              <version>1</version>
                              """.trimIndent())
-    updateAll(m1, m2)
-    val roots = tree.rootProjects
+    maven.updateAll(m1, m2)
+    val roots = maven.tree.rootProjects
     assertEquals(2, roots.size)
     assertEquals(m1, roots[0].file)
     assertEquals(m2, roots[1].file)
@@ -53,7 +102,7 @@ class MavenProjectsTreeReadingTest : MavenProjectsTreeTestCase() {
 
   @Test
   fun testModulesWithWhiteSpaces() = runBlocking {
-    createProjectPom("""
+    maven.createProjectPom("""
                        <groupId>test</groupId>
                        <artifactId>project</artifactId>
                        <version>1</version>
@@ -63,23 +112,23 @@ class MavenProjectsTreeReadingTest : MavenProjectsTreeTestCase() {
                          m  </module>
                        </modules>
                        """.trimIndent())
-    val m = createModulePom("m",
+    val m = maven.createModulePom("m",
                             """
                             <groupId>test</groupId>
                             <artifactId>m</artifactId>
                             <version>1</version>
                             """.trimIndent())
-    updateAll(projectPom)
-    val roots = tree.rootProjects
+    maven.updateAll(maven.projectPom)
+    val roots = maven.tree.rootProjects
     assertEquals(1, roots.size)
-    assertEquals(projectPom, roots[0].file)
-    assertEquals(1, tree.getModules(roots[0]).size)
-    assertEquals(m, tree.getModules(roots[0])[0].file)
+    assertEquals(maven.projectPom, roots[0].file)
+    assertEquals(1, maven.tree.getModules(roots[0]).size)
+    assertEquals(m, maven.tree.getModules(roots[0])[0].file)
   }
 
   @Test
   fun testDoNotImportChildAsRootProject() = runBlocking {
-    createProjectPom("""
+    maven.createProjectPom("""
                        <groupId>test</groupId>
                        <artifactId>project</artifactId>
                        <version>1</version>
@@ -88,38 +137,38 @@ class MavenProjectsTreeReadingTest : MavenProjectsTreeTestCase() {
                          <module>m</module>
                        </modules>
                        """.trimIndent())
-    val m = createModulePom("m",
+    val m = maven.createModulePom("m",
                             """
                             <groupId>test</groupId>
                             <artifactId>m</artifactId>
                             <version>1</version>
                             """.trimIndent())
-    updateAll(projectPom, m)
-    val roots = tree.rootProjects
+    maven.updateAll(maven.projectPom, m)
+    val roots = maven.tree.rootProjects
     assertEquals(1, roots.size)
-    assertEquals(projectPom, roots[0].file)
-    assertEquals(1, tree.getModules(roots[0]).size)
-    assertEquals(m, tree.getModules(roots[0])[0].file)
+    assertEquals(maven.projectPom, roots[0].file)
+    assertEquals(1, maven.tree.getModules(roots[0]).size)
+    assertEquals(m, maven.tree.getModules(roots[0])[0].file)
   }
 
   @Test
   fun testDoNotImportSameRootProjectTwice() = runBlocking {
     val listener = MyLoggingListener()
-    tree.addListener(listener, getTestRootDisposable())
-    val m1 = createModulePom("m1",
+    maven.project.messageBus.connect(maven.testRootDisposable).subscribe(MavenProjectsTree.Listener.TOPIC, listener)
+    val m1 = maven.createModulePom("m1",
                              """
                              <groupId>test</groupId>
                              <artifactId>m1</artifactId>
                              <version>1</version>
                              """.trimIndent())
-    val m2 = createModulePom("m2",
+    val m2 = maven.createModulePom("m2",
                              """
                              <groupId>test</groupId>
                              <artifactId>m2</artifactId>
                              <version>1</version>
                              """.trimIndent())
-    updateAll(m1, m2, m1)
-    val roots = tree.rootProjects
+    maven.updateAll(m1, m2, m1)
+    val roots = maven.tree.rootProjects
     assertEquals(2, roots.size)
     assertEquals(m1, roots[0].file)
     assertEquals(m2, roots[1].file)
@@ -128,8 +177,8 @@ class MavenProjectsTreeReadingTest : MavenProjectsTreeTestCase() {
 
   @Test
   fun testRereadingChildIfParentWasReadAfterIt() = runBlocking {
-    assumeModel_4_0_0("4.1.0 model does not allow such case: - [FATAL] 'artifactId' contains an expression but should be a constant")
-    val m2 = createModulePom("m2",
+    maven.assumeModel_4_0_0("4.1.0 model does not allow such case: - [FATAL] 'artifactId' contains an expression but should be a constant")
+    val m2 = maven.createModulePom("m2",
                              """
                              <groupId>test</groupId>
                              <artifactId>${'$'}{childId}</artifactId>
@@ -140,10 +189,10 @@ class MavenProjectsTreeReadingTest : MavenProjectsTreeTestCase() {
                                <version>1</version>
                              </parent>
                              """.trimIndent())
-    importProjectsAsync(m2)
-    assertSize(1, tree.rootProjects)
+    maven.importProjectsAsync(m2)
+    assertSize(1, maven.tree.rootProjects)
 
-    val m1 = createModulePom("m1",
+    val m1 = maven.createModulePom("m1",
                              """
                              <groupId>test</groupId>
                              <artifactId>m1</artifactId>
@@ -153,11 +202,11 @@ class MavenProjectsTreeReadingTest : MavenProjectsTreeTestCase() {
                              </properties>
                              """.trimIndent())
 
-    waitForImportWithinTimeout {
-      projectsManager.addManagedFiles(listOf(m1))
+    maven.waitForImportWithinTimeout {
+      maven.projectsManager.addManagedFiles(listOf(m1))
     }
 
-    val roots = tree.rootProjects
+    val roots = maven.tree.rootProjects
     assertEquals(2, roots.size)
     assertEquals(m1, roots[0].file)
     assertEquals(m2, roots[1].file)
@@ -167,7 +216,7 @@ class MavenProjectsTreeReadingTest : MavenProjectsTreeTestCase() {
 
   @Test
   fun testSameProjectAsModuleOfSeveralProjects() = runBlocking {
-    val p1 = createModulePom("project1",
+    val p1 = maven.createModulePom("project1",
                              """
                              <groupId>test</groupId>
                              <artifactId>project1</artifactId>
@@ -177,7 +226,7 @@ class MavenProjectsTreeReadingTest : MavenProjectsTreeTestCase() {
                                <module>../module</module>
                              </modules>
                              """.trimIndent())
-    val p2 = createModulePom("project2",
+    val p2 = maven.createModulePom("project2",
                              """
                              <groupId>test</groupId>
                              <artifactId>project2</artifactId>
@@ -187,25 +236,25 @@ class MavenProjectsTreeReadingTest : MavenProjectsTreeTestCase() {
                                <module>../module</module>
                              </modules>
                              """.trimIndent())
-    val m = createModulePom("module",
+    val m = maven.createModulePom("module",
                             """
                             <groupId>test</groupId>
                             <artifactId>module</artifactId>
                             <version>1</version>
                             """.trimIndent())
-    updateAll(p1, p2)
-    val roots = tree.rootProjects
+    maven.updateAll(p1, p2)
+    val roots = maven.tree.rootProjects
     assertEquals(2, roots.size)
     assertEquals(p1, roots[0].file)
     assertEquals(p2, roots[1].file)
-    assertEquals(1, tree.getModules(roots[0]).size)
-    assertEquals(m, tree.getModules(roots[0])[0].file)
-    assertEquals(0, tree.getModules(roots[1]).size)
+    assertEquals(1, maven.tree.getModules(roots[0]).size)
+    assertEquals(m, maven.tree.getModules(roots[0])[0].file)
+    assertEquals(0, maven.tree.getModules(roots[1]).size)
   }
 
   @Test
   fun testSameProjectAsModuleOfSeveralProjectsInHierarchy() = runBlocking {
-    createProjectPom("""
+    maven.createProjectPom("""
                        <groupId>test</groupId>
                        <artifactId>project</artifactId>
                        <version>1</version>
@@ -215,7 +264,7 @@ class MavenProjectsTreeReadingTest : MavenProjectsTreeTestCase() {
                          <module>module1/module2</module>
                        </modules>
                        """.trimIndent())
-    val m1 = createModulePom("module1",
+    val m1 = maven.createModulePom("module1",
                              """
                                        <groupId>test</groupId>
                                        <artifactId>module1</artifactId>
@@ -225,24 +274,24 @@ class MavenProjectsTreeReadingTest : MavenProjectsTreeTestCase() {
                                          <module>module2</module>
                                        </modules>
                                        """.trimIndent())
-    val m2 = createModulePom("module1/module2",
+    val m2 = maven.createModulePom("module1/module2",
                              """
                                        <groupId>test</groupId>
                                        <artifactId>module2</artifactId>
                                        <version>1</version>
                                        """.trimIndent())
-    updateAll(projectPom)
-    val roots = tree.rootProjects
+    maven.updateAll(maven.projectPom)
+    val roots = maven.tree.rootProjects
     assertEquals(1, roots.size)
     val allModules = collectAllModulesRecursively(
-      tree, roots[0])
+      maven.tree, roots[0])
     assertEquals(2, allModules.size)
     UsefulTestCase.assertSameElements(Set.of(m1, m2), allModules.map({ m: MavenProject -> m.file }))
   }
 
   @Test
   fun testRemovingChildProjectFromRootProjects() = runBlocking {
-    createProjectPom("""
+    maven.createProjectPom("""
                        <groupId>test</groupId>
                        <artifactId>project</artifactId>
                        <version>1</version>
@@ -251,7 +300,7 @@ class MavenProjectsTreeReadingTest : MavenProjectsTreeTestCase() {
                          <module>m</module>
                        </modules>
                        """.trimIndent())
-    val m = createModulePom("m",
+    val m = maven.createModulePom("m",
                             """
                                       <groupId>test</groupId>
                                       <artifactId>m</artifactId>
@@ -261,17 +310,17 @@ class MavenProjectsTreeReadingTest : MavenProjectsTreeTestCase() {
     // all projects are processed in the specified order
     // if we have imported a child project as a root one,
     // we have to correct ourselves and to remove it from roots.
-    updateAll(m, projectPom)
-    val roots = tree.rootProjects
+    maven.updateAll(m, maven.projectPom)
+    val roots = maven.tree.rootProjects
     assertEquals(1, roots.size)
-    assertEquals(projectPom, roots[0].file)
-    assertEquals(1, tree.getModules(roots[0]).size)
-    assertEquals(m, tree.getModules(roots[0])[0].file)
+    assertEquals(maven.projectPom, roots[0].file)
+    assertEquals(1, maven.tree.getModules(roots[0]).size)
+    assertEquals(m, maven.tree.getModules(roots[0])[0].file)
   }
 
   @Test
   fun testSendingNotificationsWhenAggregationChanged() = runBlocking {
-    createProjectPom("""
+    maven.createProjectPom("""
                        <groupId>test</groupId>
                        <artifactId>project</artifactId>
                        <version>1</version>
@@ -281,23 +330,23 @@ class MavenProjectsTreeReadingTest : MavenProjectsTreeTestCase() {
                          <module>m2</module>
                        </modules>
                        """.trimIndent())
-    val m1 = createModulePom("m1",
+    val m1 = maven.createModulePom("m1",
                              """
                                        <groupId>test</groupId>
                                        <artifactId>m1</artifactId>
                                        <version>1</version>
                                        """.trimIndent())
-    val m2 = createModulePom("m2",
+    val m2 = maven.createModulePom("m2",
                              """
                                        <groupId>test</groupId>
                                        <artifactId>m2</artifactId>
                                        <version>1</version>
                                        """.trimIndent())
-    updateAll(projectPom, m1, m2)
-    var roots = tree.rootProjects
+    maven.updateAll(maven.projectPom, m1, m2)
+    var roots = maven.tree.rootProjects
     assertEquals(1, roots.size)
-    assertEquals(2, tree.getModules(roots[0]).size)
-    updateProjectPom("""
+    assertEquals(2, maven.tree.getModules(roots[0]).size)
+    maven.updateProjectPom("""
                        <groupId>test</groupId>
                        <artifactId>project</artifactId>
                        <version>1</version>
@@ -306,18 +355,15 @@ class MavenProjectsTreeReadingTest : MavenProjectsTreeTestCase() {
                          <module>m1</module>
                        </modules>
                        """.trimIndent())
-    val listener = MyLoggingListener()
-    tree.addListener(listener, getTestRootDisposable())
-    update(projectPom)
-    roots = tree.rootProjects
+    maven.updateAll(maven.projectPom, m1, m2)
+    roots = maven.tree.rootProjects
     assertEquals(2, roots.size)
-    assertEquals(1, tree.getModules(roots[0]).size)
-    assertEquals(log().add("updated", "project", "m2").add("deleted"), listener.log)
+    assertEquals(1, maven.tree.getModules(roots[0]).size)
   }
 
   @Test
   fun testUpdatingWholeModel() = runBlocking {
-    createProjectPom("""
+    maven.createProjectPom("""
                        <groupId>test</groupId>
                        <artifactId>project</artifactId>
                        <version>1</version>
@@ -326,17 +372,17 @@ class MavenProjectsTreeReadingTest : MavenProjectsTreeTestCase() {
                          <module>m</module>
                        </modules>
                        """.trimIndent())
-    val m = createModulePom("m",
+    val m = maven.createModulePom("m",
                             """
                                       <groupId>test</groupId>
                                       <artifactId>m</artifactId>
                                       <version>1</version>
                                       """.trimIndent())
-    updateAll(projectPom)
-    var roots = tree.rootProjects
+    maven.updateAll(maven.projectPom)
+    var roots = maven.tree.rootProjects
     val parentNode = roots[0]
-    val childNode = tree.getModules(roots[0])[0]
-    updateProjectPom("""
+    val childNode = maven.tree.getModules(roots[0])[0]
+    maven.updateProjectPom("""
                        <groupId>test</groupId>
                        <artifactId>project1</artifactId>
                        <version>1</version>
@@ -345,17 +391,17 @@ class MavenProjectsTreeReadingTest : MavenProjectsTreeTestCase() {
                          <module>m</module>
                        </modules>
                        """.trimIndent())
-    updateModulePom("m", """
+    maven.updateModulePom("m", """
       <groupId>test</groupId>
       <artifactId>m1</artifactId>
       <version>1</version>
       """.trimIndent())
-    updateAll(projectPom)
-    roots = tree.rootProjects
+    maven.updateAll(maven.projectPom)
+    roots = maven.tree.rootProjects
     assertEquals(1, roots.size)
-    assertEquals(1, tree.getModules(roots[0]).size)
+    assertEquals(1, maven.tree.getModules(roots[0]).size)
     val parentNode1 = roots[0]
-    val childNode1 = tree.getModules(roots[0])[0]
+    val childNode1 = maven.tree.getModules(roots[0])[0]
     assertSame(parentNode, parentNode1)
     assertSame(childNode, childNode1)
     assertEquals("project1", parentNode1.mavenId.artifactId)
@@ -364,7 +410,7 @@ class MavenProjectsTreeReadingTest : MavenProjectsTreeTestCase() {
 
   @Test
   fun testForceUpdatingWholeModel() = runBlocking {
-    createProjectPom("""
+    maven.createProjectPom("""
                        <groupId>test</groupId>
                        <artifactId>project</artifactId>
                        <version>1</version>
@@ -373,27 +419,27 @@ class MavenProjectsTreeReadingTest : MavenProjectsTreeTestCase() {
                          <module>m</module>
                        </modules>
                        """.trimIndent())
-    val m = createModulePom("m",
+    val m = maven.createModulePom("m",
                             """
                                       <groupId>test</groupId>
                                       <artifactId>m</artifactId>
                                       <version>1</version>
                                       """.trimIndent())
     val l = MyLoggingListener()
-    tree.addListener(l, getTestRootDisposable())
-    updateAll(projectPom)
+    maven.project.messageBus.connect(maven.testRootDisposable).subscribe(MavenProjectsTree.Listener.TOPIC, l)
+    maven.updateAll(maven.projectPom)
     assertEquals(log().add("updated", "project", "m").add("deleted"), l.log)
     l.log.clear()
-    tree.updateAll(false, mavenGeneralSettings, mavenEmbedderWrappers, rawProgressReporter)
+    maven.tree.updateAll(listOf(maven.projectPom), false, maven.mavenGeneralSettings, MavenExplicitProfiles.NONE, maven.mavenEmbedderWrappers, maven.rawProgressReporter)
     assertEquals(log(), l.log)
     l.log.clear()
-    tree.updateAll(true, mavenGeneralSettings, mavenEmbedderWrappers, rawProgressReporter)
+    maven.tree.updateAll(listOf(maven.projectPom), true, maven.mavenGeneralSettings, MavenExplicitProfiles.NONE, maven.mavenEmbedderWrappers, maven.rawProgressReporter)
     assertEquals(log().add("updated", "project", "m").add("deleted"), l.log)
   }
 
   @Test
   fun testForceUpdatingSingleProject() = runBlocking {
-    createProjectPom("""
+    maven.createProjectPom("""
                        <groupId>test</groupId>
                        <artifactId>project</artifactId>
                        <version>1</version>
@@ -402,29 +448,29 @@ class MavenProjectsTreeReadingTest : MavenProjectsTreeTestCase() {
                          <module>m</module>
                        </modules>
                        """.trimIndent())
-    val m = createModulePom("m",
+    val m = maven.createModulePom("m",
                             """
                                       <groupId>test</groupId>
                                       <artifactId>m</artifactId>
                                       <version>1</version>
                                       """.trimIndent())
     val l = MyLoggingListener()
-    tree.addListener(l, getTestRootDisposable())
-    update(projectPom)
+    maven.project.messageBus.connect(maven.testRootDisposable).subscribe(MavenProjectsTree.Listener.TOPIC, l)
+    maven.update(maven.projectPom)
     assertEquals(log().add("updated", "project", "m").add("deleted"), l.log)
     l.log.clear()
-    tree.update(listOf(projectPom), false, mavenGeneralSettings, mavenEmbedderWrappers, rawProgressReporter)
+    maven.tree.update(listOf(maven.projectPom), false, maven.mavenGeneralSettings, MavenExplicitProfiles.NONE, maven.mavenEmbedderWrappers, maven.rawProgressReporter)
     assertEquals(log(), l.log)
     l.log.clear()
-    tree.update(listOf(projectPom), true, mavenGeneralSettings, mavenEmbedderWrappers, rawProgressReporter)
+    maven.tree.update(listOf(maven.projectPom), true, maven.mavenGeneralSettings, MavenExplicitProfiles.NONE, maven.mavenEmbedderWrappers, maven.rawProgressReporter)
     assertEquals(log().add("updated", "project").add("deleted"), l.log)
     l.log.clear()
   }
 
   @Test
   fun testUpdatingModelWithNewProfiles() = runBlocking {
-    assumeModel_4_0_0("IDEA-379195")
-    createProjectPom("""
+    maven.assumeModel_4_0_0("IDEA-379195")
+    maven.createProjectPom("""
                        <groupId>test</groupId>
                        <artifactId>project</artifactId>
                        <version>1</version>
@@ -444,38 +490,38 @@ class MavenProjectsTreeReadingTest : MavenProjectsTreeTestCase() {
                          </profile>
                        </profiles>
                        """.trimIndent())
-    val m1 = createModulePom("m1",
+    val m1 = maven.createModulePom("m1",
                              """
                                        <groupId>test</groupId>
                                        <artifactId>m1</artifactId>
                                        <version>1</version>
                                        """.trimIndent())
-    val m2 = createModulePom("m2",
+    val m2 = maven.createModulePom("m2",
                              """
                                        <groupId>test</groupId>
                                        <artifactId>m2</artifactId>
                                        <version>1</version>
                                        """.trimIndent())
-    importProjectWithProfiles("one")
-    var roots = tree.rootProjects
-    assertEquals("should be one root project", 1, roots.size)
-    assertEquals("should be one root project and it should be $projectPom", projectPom, roots[0].file)
-    assertEquals("this project should have one subproject", 1, tree.getModules(roots[0]).size)
-    assertEquals("this project should have one subproject, and this subproject should be m1", m1, tree.getModules(roots[0])[0].file)
-    projectsManager.explicitProfiles = MavenExplicitProfiles(listOf("two"))
-    updateAllProjects()
-    roots = tree.rootProjects
-    assertEquals("after reimport should be one root project", 1, roots.size)
-    assertEquals("after reimport should be one root project and it should be $projectPom", projectPom, roots[0].file)
-    assertEquals("after reimport this project should have one subproject", 1, tree.getModules(roots[0]).size)
-    assertEquals("after reimport this project should have one subproject, and this subproject should be m2",
-                 m2,
-                 tree.getModules(roots[0])[0].file)
+    maven.importProjectWithProfiles("one")
+    var roots = maven.tree.rootProjects
+    assertEquals(1, roots.size, "should be one root project")
+    assertEquals(maven.projectPom, roots[0].file, "should be one root project and it should be ${maven.projectPom}")
+    assertEquals(1, maven.tree.getModules(roots[0]).size, "this project should have one subproject")
+    assertEquals(m1, maven.tree.getModules(roots[0])[0].file, "this project should have one subproject, and this subproject should be m1")
+    maven.projectsManager.explicitProfiles = MavenExplicitProfiles(listOf("two"))
+    maven.updateAllProjects()
+    roots = maven.tree.rootProjects
+    assertEquals(1, roots.size, "after reimport should be one root project")
+    assertEquals(maven.projectPom, roots[0].file, "after reimport should be one root project and it should be ${maven.projectPom}")
+    assertEquals(1, maven.tree.getModules(roots[0]).size, "after reimport this project should have one subproject")
+    assertEquals(m2,
+                 maven.tree.getModules(roots[0])[0].file,
+                 "after reimport this project should have one subproject, and this subproject should be m2")
   }
 
   @Test
   fun testUpdatingParticularProject() = runBlocking {
-    createProjectPom("""
+    maven.createProjectPom("""
                        <groupId>test</groupId>
                        <artifactId>project</artifactId>
                        <version>1</version>
@@ -484,27 +530,27 @@ class MavenProjectsTreeReadingTest : MavenProjectsTreeTestCase() {
                          <module>m</module>
                        </modules>
                        """.trimIndent())
-    val m = createModulePom("m",
+    val m = maven.createModulePom("m",
                             """
                                       <groupId>test</groupId>
                                       <artifactId>m</artifactId>
                                       <version>1</version>
                                       """.trimIndent())
-    updateAll(projectPom)
-    updateModulePom("m", """
+    maven.updateAll(maven.projectPom)
+    maven.updateModulePom("m", """
       <groupId>test</groupId>
       <artifactId>m1</artifactId>
       <version>1</version>
       """.trimIndent())
-    update(m)
-    val n = tree.findProject(m)
+    maven.update(m)
+    val n = maven.tree.findProject(m)
     assertEquals("m1", n!!.mavenId.artifactId)
   }
 
   @Test
   fun testUpdatingInheritance() = runBlocking {
-    assumeModel_4_0_0("4.1.0 model does not allow such case: - [FATAL] 'artifactId' contains an expression but should be a constant")
-    createProjectPom("""
+    maven.assumeModel_4_0_0("4.1.0 model does not allow such case: - [FATAL] 'artifactId' contains an expression but should be a constant")
+    maven.createProjectPom("""
                        <groupId>test</groupId>
                        <artifactId>parent</artifactId>
                        <version>1</version>
@@ -512,7 +558,7 @@ class MavenProjectsTreeReadingTest : MavenProjectsTreeTestCase() {
                          <childName>child</childName>
                        </properties>
                        """.trimIndent())
-    val child = createModulePom("child",
+    val child = maven.createModulePom("child",
                                 """
                                           <groupId>test</groupId>
                                           <artifactId>${'$'}{childName}</artifactId>
@@ -523,9 +569,9 @@ class MavenProjectsTreeReadingTest : MavenProjectsTreeTestCase() {
                                             <version>1</version>
                                           </parent>
                                           """.trimIndent())
-    importProjectsAsync(projectPom, child)
-    assertEquals("child", tree.findProject(child)!!.mavenId.artifactId)
-    updateProjectPom("""
+    maven.importProjectsAsync(maven.projectPom, child)
+    assertEquals("child", maven.tree.findProject(child)!!.mavenId.artifactId)
+    maven.updateProjectPom("""
                        <groupId>test</groupId>
                        <artifactId>parent</artifactId>
                        <version>1</version>
@@ -533,14 +579,14 @@ class MavenProjectsTreeReadingTest : MavenProjectsTreeTestCase() {
                          <childName>child2</childName>
                        </properties>
                        """.trimIndent())
-    updateAllProjects()
-    assertEquals("child2", tree.findProject(child)!!.mavenId.artifactId)
+    maven.updateAllProjects()
+    assertEquals("child2", maven.tree.findProject(child)!!.mavenId.artifactId)
   }
 
   @Test
   fun testUpdatingInheritanceHierarhically() = runBlocking {
-    assumeModel_4_0_0("4.1.0 model does not allow such case: - [FATAL] 'artifactId' contains an expression but should be a constant")
-    createProjectPom("""
+    maven.assumeModel_4_0_0("4.1.0 model does not allow such case: - [FATAL] 'artifactId' contains an expression but should be a constant")
+    maven.createProjectPom("""
                        <groupId>test</groupId>
                        <artifactId>parent</artifactId>
                        <version>1</version>
@@ -549,7 +595,7 @@ class MavenProjectsTreeReadingTest : MavenProjectsTreeTestCase() {
                          <subChildName>subChild</subChildName>
                        </properties>
                        """.trimIndent())
-    val child = createModulePom("child",
+    val child = maven.createModulePom("child",
                                 """
                                           <groupId>test</groupId>
                                           <artifactId>child</artifactId>
@@ -561,7 +607,7 @@ class MavenProjectsTreeReadingTest : MavenProjectsTreeTestCase() {
                                             <version>1</version>
                                           </parent>
                                           """.trimIndent())
-    val subChild = createModulePom("subChild",
+    val subChild = maven.createModulePom("subChild",
                                    """
                                              <groupId>test</groupId>
                                              <artifactId>${'$'}{subChildName}</artifactId>
@@ -572,9 +618,9 @@ class MavenProjectsTreeReadingTest : MavenProjectsTreeTestCase() {
                                                <version>1</version>
                                              </parent>
                                              """.trimIndent())
-    importProjectsAsync(projectPom, child, subChild)
-    assertEquals("subChild", tree.findProject(subChild)!!.mavenId.artifactId)
-    updateProjectPom("""
+    maven.importProjectsAsync(maven.projectPom, child, subChild)
+    assertEquals("subChild", maven.tree.findProject(subChild)!!.mavenId.artifactId)
+    maven.updateProjectPom("""
                        <groupId>test</groupId>
                        <artifactId>parent</artifactId>
                        <version>1</version>
@@ -582,45 +628,46 @@ class MavenProjectsTreeReadingTest : MavenProjectsTreeTestCase() {
                          <subChildName>subChild2</subChildName>
                        </properties>
                        """.trimIndent())
-    updateAllProjects()
-    assertEquals("subChild2", tree.findProject(subChild)!!.mavenId.artifactId)
+    maven.updateAllProjects()
+    assertEquals("subChild2", maven.tree.findProject(subChild)!!.mavenId.artifactId)
   }
 
   @Test
   fun testSendingNotificationAfterProjectIsAddedInToHierarchy() = runBlocking {
     val listener = MyLoggingListener()
-    tree.addListener(listener, getTestRootDisposable())
-    createProjectPom("""
+    maven.project.messageBus.connect(maven.testRootDisposable).subscribe(MavenProjectsTree.Listener.TOPIC, listener)
+    maven.createProjectPom("""
                        <groupId>test</groupId>
                        <artifactId>m1</artifactId>
                        <version>1</version>
                        """.trimIndent())
-    updateAll(projectPom)
+    maven.updateAll(maven.projectPom)
     assertEquals(log().add("updated", "m1").add("deleted"), listener.log)
   }
 
   @Test
   fun testSendingNotificationsWhenResolveFailed() = runBlocking {
-    createProjectPom("""
+    val p = maven.createProjectPom("""
                        <groupId>test</groupId>
                        <artifactId>project</artifactId>
                        <version>1</version>
                        <name
                        """.trimIndent())
-    updateAll(projectPom)
+    maven.updateAll(maven.projectPom)
     val listener = MyLoggingListener()
-    tree.addListener(listener, getTestRootDisposable())
-    val mavenProject = tree.findProject(projectPom)!!
-    resolve(project, mavenProject, mavenGeneralSettings)
+    maven.project.messageBus.connect(maven.testRootDisposable).subscribe(MavenProjectsTree.Listener.TOPIC, listener)
+    val mavenProject = maven.tree.findProject(maven.projectPom)!!
+    maven.resolve(maven.project, mavenProject, maven.mavenGeneralSettings)
     assertEquals(log().add("resolved", "project"), listener.log)
-    updateAllProjects()
+    maven.projectsManager.state.originalFiles = listOf(p.path)
+    maven.updateAllProjects()
     assertFalse(mavenProject.problems.isEmpty())
   }
 
   @Test
   fun testAddingInheritanceParent() = runBlocking {
-    assumeModel_4_0_0("4.1.0 model does not allow such case: - [FATAL] 'artifactId' contains an expression but should be a constant")
-    val child = createModulePom("child",
+    maven.assumeModel_4_0_0("4.1.0 model does not allow such case: - [FATAL] 'artifactId' contains an expression but should be a constant")
+    val child = maven.createModulePom("child",
                                 """
                                           <groupId>test</groupId>
                                           <artifactId>${'$'}{childName}</artifactId>
@@ -631,9 +678,9 @@ class MavenProjectsTreeReadingTest : MavenProjectsTreeTestCase() {
                                             <version>1</version>
                                           </parent>
                                           """.trimIndent())
-    importProjectsAsync(child)
-    assertEquals("\${childName}", tree.findProject(child)!!.mavenId.artifactId)
-    val parent = createModulePom("parent",
+    maven.importProjectsAsync(child)
+    assertEquals("\${childName}", maven.tree.findProject(child)!!.mavenId.artifactId)
+    val parent = maven.createModulePom("parent",
                                  """
                                            <groupId>test</groupId>
                                            <artifactId>parent</artifactId>
@@ -642,16 +689,16 @@ class MavenProjectsTreeReadingTest : MavenProjectsTreeTestCase() {
                                              <childName>child</childName>
                                            </properties>
                                            """.trimIndent())
-    waitForImportWithinTimeout {
-      projectsManager.addManagedFiles(listOf(parent))
+    maven.waitForImportWithinTimeout {
+      maven.projectsManager.addManagedFiles(listOf(parent))
     }
-    assertEquals("child", tree.findProject(child)!!.mavenId.artifactId)
+    assertEquals("child", maven.tree.findProject(child)!!.mavenId.artifactId)
   }
 
   @Test
   fun testAddingInheritanceChild() = runBlocking {
-    assumeModel_4_0_0("4.1.0 model does not allow such case: - [FATAL] 'artifactId' contains an expression but should be a constant")
-    val parent = createModulePom("parent",
+    maven.assumeModel_4_0_0("4.1.0 model does not allow such case: - [FATAL] 'artifactId' contains an expression but should be a constant")
+    val parent = maven.createModulePom("parent",
                                  """
                                            <groupId>test</groupId>
                                            <artifactId>parent</artifactId>
@@ -660,8 +707,8 @@ class MavenProjectsTreeReadingTest : MavenProjectsTreeTestCase() {
                                              <childName>child</childName>
                                            </properties>
                                            """.trimIndent())
-    importProjectsAsync(parent)
-    val child = createModulePom("child",
+    maven.importProjectsAsync(parent)
+    val child = maven.createModulePom("child",
                                 """
                                           <groupId>test</groupId>
                                           <artifactId>${'$'}{childName}</artifactId>
@@ -672,16 +719,16 @@ class MavenProjectsTreeReadingTest : MavenProjectsTreeTestCase() {
                                             <version>1</version>
                                           </parent>
                                           """.trimIndent())
-    waitForImportWithinTimeout {
-      projectsManager.addManagedFiles(listOf(child))
+    maven.waitForImportWithinTimeout {
+      maven.projectsManager.addManagedFiles(listOf(child))
     }
-    assertEquals("child", tree.findProject(child)!!.mavenId.artifactId)
+    assertEquals("child", maven.tree.findProject(child)!!.mavenId.artifactId)
   }
 
   @Test
   fun testParentPropertyInterpolation() = runBlocking {
-    assumeModel_4_0_0("4.1.0 model does not allow such case: - [FATAL] 'artifactId' contains an expression but should be a constant")
-    createProjectPom("""
+    maven.assumeModel_4_0_0("4.1.0 model does not allow such case: - [FATAL] 'artifactId' contains an expression but should be a constant")
+    maven.createProjectPom("""
                        <groupId>test</groupId>
                        <artifactId>parent</artifactId>
                        <version>1</version>
@@ -690,8 +737,8 @@ class MavenProjectsTreeReadingTest : MavenProjectsTreeTestCase() {
                          <childName>child</childName>
                        </properties>
                        """.trimIndent())
-    importProjectAsync()
-    val child = createModulePom("child",
+    maven.importProjectAsync()
+    val child = maven.createModulePom("child",
                                 """
                                           <groupId>test</groupId>
                                           <artifactId>${'$'}{childName}</artifactId>
@@ -702,16 +749,16 @@ class MavenProjectsTreeReadingTest : MavenProjectsTreeTestCase() {
                                             <version>1</version>
                                           </parent>
                                           """.trimIndent())
-    waitForImportWithinTimeout {
-      projectsManager.addManagedFiles(listOf(child))
+    maven.waitForImportWithinTimeout {
+      maven.projectsManager.addManagedFiles(listOf(child))
     }
-    assertEquals("child", tree.findProject(child)!!.mavenId.artifactId)
+    assertEquals("child", maven.tree.findProject(child)!!.mavenId.artifactId)
   }
 
   @Test
   fun testAddingInheritanceChildOnParentUpdate() = runBlocking {
-    assumeModel_4_0_0("4.1.0 model does not allow such case: - [FATAL] 'artifactId' contains an expression but should be a constant")
-    createProjectPom("""
+    maven.assumeModel_4_0_0("4.1.0 model does not allow such case: - [FATAL] 'artifactId' contains an expression but should be a constant")
+    maven.createProjectPom("""
                        <groupId>test</groupId>
                        <artifactId>parent</artifactId>
                        <version>1</version>
@@ -723,9 +770,9 @@ class MavenProjectsTreeReadingTest : MavenProjectsTreeTestCase() {
                          <module>child</module>
                        </modules>
                        """.trimIndent())
-    importProjectsAsync()
-    assertEmpty(tree.projects)
-    val child = createModulePom("child",
+    maven.importProjectsAsync()
+    assertEmpty(maven.tree.projects)
+    val child = maven.createModulePom("child",
                                 """
                                           <groupId>test</groupId>
                                           <artifactId>${'$'}{childName}</artifactId>
@@ -736,13 +783,13 @@ class MavenProjectsTreeReadingTest : MavenProjectsTreeTestCase() {
                                             <version>1</version>
                                           </parent>
                                           """.trimIndent())
-    importProjectsAsync(child)
-    assertEquals("child", tree.findProject(child)!!.mavenId.artifactId)
+    maven.importProjectsAsync(child)
+    assertEquals("child", maven.tree.findProject(child)!!.mavenId.artifactId)
   }
 
   @Test
   fun testDoNotReAddInheritanceChildOnParentModulesRemoval() = runBlocking {
-    createProjectPom("""
+    maven.createProjectPom("""
                        <groupId>test</groupId>
                        <artifactId>parent</artifactId>
                        <version>1</version>
@@ -750,7 +797,7 @@ class MavenProjectsTreeReadingTest : MavenProjectsTreeTestCase() {
                         <module>child</module>
                        </modules>
                        """.trimIndent())
-    val child = createModulePom("child",
+    val child = maven.createModulePom("child",
                                 """
                                           <groupId>test</groupId>
                                           <artifactId>child</artifactId>
@@ -761,28 +808,28 @@ class MavenProjectsTreeReadingTest : MavenProjectsTreeTestCase() {
                                             <version>1</version>
                                           </parent>
                                           """.trimIndent())
-    updateAll(projectPom)
-    var roots = tree.rootProjects
+    maven.updateAll(maven.projectPom)
+    var roots = maven.tree.rootProjects
     assertEquals(1, roots.size)
-    assertEquals(projectPom, roots[0].file)
-    assertEquals(1, tree.getModules(roots[0]).size)
-    assertEquals(child, tree.getModules(roots[0])[0].file)
-    updateProjectPom("""
+    assertEquals(maven.projectPom, roots[0].file)
+    assertEquals(1, maven.tree.getModules(roots[0]).size)
+    assertEquals(child, maven.tree.getModules(roots[0])[0].file)
+    maven.updateProjectPom("""
                        <groupId>test</groupId>
                        <artifactId>parent</artifactId>
                        <version>1</version>
                        """.trimIndent())
-    update(projectPom)
-    roots = tree.rootProjects
+    maven.update(maven.projectPom)
+    roots = maven.tree.rootProjects
     assertEquals(1, roots.size)
-    assertEquals(projectPom, roots[0].file)
-    assertEquals(0, tree.getModules(roots[0]).size)
+    assertEquals(maven.projectPom, roots[0].file)
+    assertEquals(0, maven.tree.getModules(roots[0]).size)
   }
 
   @Test
   fun testChangingInheritance() = runBlocking {
-    assumeModel_4_0_0("4.1.0 model does not allow such case: - [FATAL] 'artifactId' contains an expression but should be a constant")
-    val parent1 = createModulePom("parent1",
+    maven.assumeModel_4_0_0("4.1.0 model does not allow such case: - [FATAL] 'artifactId' contains an expression but should be a constant")
+    val parent1 = maven.createModulePom("parent1",
                                   """
                                             <groupId>test</groupId>
                                             <artifactId>parent1</artifactId>
@@ -791,7 +838,7 @@ class MavenProjectsTreeReadingTest : MavenProjectsTreeTestCase() {
                                               <childName>child1</childName>
                                             </properties>
                                             """.trimIndent())
-    val parent2 = createModulePom("parent2",
+    val parent2 = maven.createModulePom("parent2",
                                   """
                                             <groupId>test</groupId>
                                             <artifactId>parent2</artifactId>
@@ -800,7 +847,7 @@ class MavenProjectsTreeReadingTest : MavenProjectsTreeTestCase() {
                                               <childName>child2</childName>
                                             </properties>
                                             """.trimIndent())
-    val child = createModulePom("child",
+    val child = maven.createModulePom("child",
                                 """
                                           <groupId>test</groupId>
                                           <artifactId>${'$'}{childName}</artifactId>
@@ -811,9 +858,9 @@ class MavenProjectsTreeReadingTest : MavenProjectsTreeTestCase() {
                                             <version>1</version>
                                           </parent>
                                           """.trimIndent())
-    importProjectsAsync(parent1, parent2, child)
-    assertEquals("child1", tree.findProject(child)!!.mavenId.artifactId)
-    updateModulePom("child", """
+    maven.importProjectsAsync(parent1, parent2, child)
+    assertEquals("child1", maven.tree.findProject(child)!!.mavenId.artifactId)
+    maven.updateModulePom("child", """
       <groupId>test</groupId>
       <artifactId>${'$'}{childName}</artifactId>
       <version>1</version>
@@ -823,14 +870,14 @@ class MavenProjectsTreeReadingTest : MavenProjectsTreeTestCase() {
         <version>1</version>
       </parent>
       """.trimIndent())
-    updateAllProjects()
-    assertEquals("child2", tree.findProject(child)!!.mavenId.artifactId)
+    maven.updateAllProjects()
+    assertEquals("child2", maven.tree.findProject(child)!!.mavenId.artifactId)
   }
 
   @Test
   fun testChangingInheritanceParentId() = runBlocking {
-    assumeModel_4_0_0("4.1.0 model does not allow such case: - [FATAL] 'artifactId' contains an expression but should be a constant")
-    createProjectPom("""
+    maven.assumeModel_4_0_0("4.1.0 model does not allow such case: - [FATAL] 'artifactId' contains an expression but should be a constant")
+    maven.createProjectPom("""
                        <groupId>test</groupId>
                        <artifactId>parent</artifactId>
                        <version>1</version>
@@ -838,7 +885,7 @@ class MavenProjectsTreeReadingTest : MavenProjectsTreeTestCase() {
                          <childName>child</childName>
                        </properties>
                        """.trimIndent())
-    val child = createModulePom("child",
+    val child = maven.createModulePom("child",
                                 """
                                           <groupId>test</groupId>
                                           <artifactId>${'$'}{childName}</artifactId>
@@ -849,9 +896,9 @@ class MavenProjectsTreeReadingTest : MavenProjectsTreeTestCase() {
                                             <version>1</version>
                                           </parent>
                                           """.trimIndent())
-    importProjectsAsync(projectPom, child)
-    assertEquals("child", tree.findProject(child)!!.mavenId.artifactId)
-    updateProjectPom("""
+    maven.importProjectsAsync(maven.projectPom, child)
+    assertEquals("child", maven.tree.findProject(child)!!.mavenId.artifactId)
+    maven.updateProjectPom("""
                        <groupId>test</groupId>
                        <artifactId>parent2</artifactId>
                        <version>1</version>
@@ -859,13 +906,13 @@ class MavenProjectsTreeReadingTest : MavenProjectsTreeTestCase() {
                          <childName>child</childName>
                        </properties>
                        """.trimIndent())
-    updateAllProjects()
-    assertEquals("\${childName}", tree.findProject(child)!!.mavenId.artifactId)
+    maven.updateAllProjects()
+    assertEquals("\${childName}", maven.tree.findProject(child)!!.mavenId.artifactId)
   }
 
   @Test
   fun testHandlingSelfInheritance() = runBlocking {
-    createProjectPom("""
+    maven.createProjectPom("""
                        <groupId>test</groupId>
                        <artifactId>parent</artifactId>
                        <version>1</version>
@@ -875,16 +922,16 @@ class MavenProjectsTreeReadingTest : MavenProjectsTreeTestCase() {
                          <version>1</version>
                        </parent>
                        """.trimIndent())
-    updateAll(projectPom) // shouldn't hang
-    updateTimestamps(projectPom)
-    update(projectPom) // shouldn't hang
-    updateTimestamps(projectPom)
-    updateAll(projectPom) // shouldn't hang
+    maven.updateAll(maven.projectPom) // shouldn't hang
+    maven.updateTimestamps(maven.projectPom)
+    maven.update(maven.projectPom) // shouldn't hang
+    maven.updateTimestamps(maven.projectPom)
+    maven.updateAll(maven.projectPom) // shouldn't hang
   }
 
   @Test
   fun testHandlingRecursiveInheritance() = runBlocking {
-    createProjectPom("""
+    maven.createProjectPom("""
                        <groupId>test</groupId>
                        <artifactId>parent</artifactId>
                        <version>1</version>
@@ -897,7 +944,7 @@ class MavenProjectsTreeReadingTest : MavenProjectsTreeTestCase() {
                          <module>child</module>
                        </properties>
                        """.trimIndent())
-    val child = createModulePom("child",
+    val child = maven.createModulePom("child",
                                 """
                                           <groupId>test</groupId>
                                           <artifactId>child</artifactId>
@@ -908,19 +955,19 @@ class MavenProjectsTreeReadingTest : MavenProjectsTreeTestCase() {
                                             <version>1</version>
                                           </parent>
                                           """.trimIndent())
-    updateAll(projectPom, child) // shouldn't hang
-    updateTimestamps(projectPom, child)
-    update(projectPom) // shouldn't hang
-    updateTimestamps(projectPom, child)
-    update(child) // shouldn't hang
-    updateTimestamps(projectPom, child)
-    updateAll(projectPom, child) // shouldn't hang
+    maven.updateAll(maven.projectPom, child) // shouldn't hang
+    maven.updateTimestamps(maven.projectPom, child)
+    maven.update(maven.projectPom) // shouldn't hang
+    maven.updateTimestamps(maven.projectPom, child)
+    maven.update(child) // shouldn't hang
+    maven.updateTimestamps(maven.projectPom, child)
+    maven.updateAll(maven.projectPom, child) // shouldn't hang
   }
 
   @Test
   fun testDeletingInheritanceParent() = runBlocking {
-    assumeModel_4_0_0("4.1.0 model does not allow such case: - [FATAL] 'artifactId' contains an expression but should be a constant")
-    val parent = createModulePom("parent",
+    maven.assumeModel_4_0_0("4.1.0 model does not allow such case: - [FATAL] 'artifactId' contains an expression but should be a constant")
+    val parent = maven.createModulePom("parent",
                                  """
                                            <groupId>test</groupId>
                                            <artifactId>parent</artifactId>
@@ -929,7 +976,7 @@ class MavenProjectsTreeReadingTest : MavenProjectsTreeTestCase() {
                                              <childName>child</childName>
                                            </properties>
                                            """.trimIndent())
-    val child = createModulePom("child",
+    val child = maven.createModulePom("child",
                                 """
                                           <groupId>test</groupId>
                                           <artifactId>${'$'}{childName}</artifactId>
@@ -940,17 +987,17 @@ class MavenProjectsTreeReadingTest : MavenProjectsTreeTestCase() {
                                             <version>1</version>
                                           </parent>
                                           """.trimIndent())
-    importProjectsAsync(parent, child)
-    assertEquals("child", tree.findProject(child)!!.mavenId.artifactId)
+    maven.importProjectsAsync(parent, child)
+    assertEquals("child", maven.tree.findProject(child)!!.mavenId.artifactId)
     VfsTestUtil.deleteFile(parent)
-    updateAllProjects()
-    assertEquals("\${childName}", tree.findProject(child)!!.mavenId.artifactId)
+    maven.updateAllProjects()
+    assertEquals("\${childName}", maven.tree.findProject(child)!!.mavenId.artifactId)
   }
 
   @Test
   fun testDeletingInheritanceChild() = runBlocking {
-    assumeModel_4_0_0("4.1.0 model does not allow such case: - [FATAL] 'artifactId' contains an expression but should be a constant")
-    createProjectPom("""
+    maven.assumeModel_4_0_0("4.1.0 model does not allow such case: - [FATAL] 'artifactId' contains an expression but should be a constant")
+    maven.createProjectPom("""
                        <groupId>test</groupId>
                        <artifactId>parent</artifactId>
                        <version>1</version>
@@ -959,7 +1006,7 @@ class MavenProjectsTreeReadingTest : MavenProjectsTreeTestCase() {
                          <subChildName>subChild</subChildName>
                        </properties>
                        """.trimIndent())
-    val child = createModulePom("child",
+    val child = maven.createModulePom("child",
                                 """
                                           <groupId>test</groupId>
                                           <artifactId>child</artifactId>
@@ -971,7 +1018,7 @@ class MavenProjectsTreeReadingTest : MavenProjectsTreeTestCase() {
                                             <version>1</version>
                                           </parent>
                                           """.trimIndent())
-    val subChild = createModulePom("subChild",
+    val subChild = maven.createModulePom("subChild",
                                    """
                                              <groupId>test</groupId>
                                              <artifactId>${'$'}{subChildName}</artifactId>
@@ -982,16 +1029,16 @@ class MavenProjectsTreeReadingTest : MavenProjectsTreeTestCase() {
                                                <version>1</version>
                                              </parent>
                                              """.trimIndent())
-    importProjectsAsync(projectPom, child, subChild)
-    assertEquals("subChild", tree.findProject(subChild)!!.mavenId.artifactId)
-    deleteProject(child)
-    assertEquals("\${subChildName}", tree.findProject(subChild)!!.mavenId.artifactId)
+    maven.importProjectsAsync(maven.projectPom, child, subChild)
+    assertEquals("subChild", maven.tree.findProject(subChild)!!.mavenId.artifactId)
+    maven.deleteProject(child)
+    assertEquals("\${subChildName}", maven.tree.findProject(subChild)!!.mavenId.artifactId)
   }
 
 
   @Test
   fun testRecursiveInheritanceAndAggregation() = runBlocking {
-    createProjectPom("""
+    maven.createProjectPom("""
                        <groupId>test</groupId>
                        <artifactId>parent</artifactId>
                        <version>1</version>
@@ -1004,38 +1051,38 @@ class MavenProjectsTreeReadingTest : MavenProjectsTreeTestCase() {
                         <module>child</module>
                        </modules>
                        """.trimIndent())
-    val child = createModulePom("child",
+    val child = maven.createModulePom("child",
                                 """
                                           <groupId>test</groupId>
                                           <artifactId>child</artifactId>
                                           <version>1</version>
                                           """.trimIndent())
-    updateAll(projectPom) // should not recurse
-    updateTimestamps(projectPom, child)
-    updateAll(child) // should not recurse
+    maven.updateAll(maven.projectPom) // should not recurse
+    maven.updateTimestamps(maven.projectPom, child)
+    maven.updateAll(child) // should not recurse
   }
 
   @Test
   fun testUpdatingAddsModules() = runBlocking {
-    assumeModel_4_0_0("4.1.0 model does not allow such case: - [FATAL] 'artifactId' contains an expression but should be a constant")
-    createProjectPom("""
+    maven.assumeModel_4_0_0("4.1.0 model does not allow such case: - [FATAL] 'artifactId' contains an expression but should be a constant")
+    maven.createProjectPom("""
                        <groupId>test</groupId>
                        <artifactId>project</artifactId>
                        <version>1</version>
                        <packaging>pom</packaging>
                        """.trimIndent())
-    val m = createModulePom("m",
+    val m = maven.createModulePom("m",
                             """
                                       <groupId>test</groupId>
                                       <artifactId>m</artifactId>
                                       <version>1</version>
                                       """.trimIndent())
-    updateAll(projectPom)
-    var roots = tree.rootProjects
+    maven.updateAll(maven.projectPom)
+    var roots = maven.tree.rootProjects
     assertEquals(1, roots.size)
-    assertEquals(projectPom, roots[0].file)
-    assertEquals(0, tree.getModules(roots[0]).size)
-    updateProjectPom("""
+    assertEquals(maven.projectPom, roots[0].file)
+    assertEquals(0, maven.tree.getModules(roots[0]).size)
+    maven.updateProjectPom("""
                        <groupId>test</groupId>
                        <artifactId>project</artifactId>
                        <version>1</version>
@@ -1044,17 +1091,17 @@ class MavenProjectsTreeReadingTest : MavenProjectsTreeTestCase() {
                          <module>m</module>
                        </modules>
                        """.trimIndent())
-    update(projectPom)
-    roots = tree.rootProjects
+    maven.update(maven.projectPom)
+    roots = maven.tree.rootProjects
     assertEquals(1, roots.size)
-    assertEquals(projectPom, roots[0].file)
-    assertEquals(1, tree.getModules(roots[0]).size)
-    assertEquals(m, tree.getModules(roots[0])[0].file)
+    assertEquals(maven.projectPom, roots[0].file)
+    assertEquals(1, maven.tree.getModules(roots[0]).size)
+    assertEquals(m, maven.tree.getModules(roots[0])[0].file)
   }
 
   @Test
   fun testUpdatingUpdatesModulesIfProjectIsChanged() = runBlocking {
-    createProjectPom("""
+    maven.createProjectPom("""
                        <groupId>test</groupId>
                        <artifactId>project</artifactId>
                        <version>1</version>
@@ -1063,15 +1110,15 @@ class MavenProjectsTreeReadingTest : MavenProjectsTreeTestCase() {
                          <module>m</module>
                        </modules>
                        """.trimIndent())
-    val m = createModulePom("m",
+    val m = maven.createModulePom("m",
                             """
                                       <groupId>test</groupId>
                                       <artifactId>m</artifactId>
                                       <version>1</version>
                                       """.trimIndent())
-    updateAll(projectPom)
-    assertEquals("m", tree.findProject(m)!!.mavenId.artifactId)
-    updateProjectPom("""
+    maven.updateAll(maven.projectPom)
+    assertEquals("m", maven.tree.findProject(m)!!.mavenId.artifactId)
+    maven.updateProjectPom("""
                        <groupId>test</groupId>
                        <artifactId>project</artifactId>
                        <version>1</version>
@@ -1081,18 +1128,18 @@ class MavenProjectsTreeReadingTest : MavenProjectsTreeTestCase() {
                          <module>m</module>
                        </modules>
                        """.trimIndent())
-    updateModulePom("m", """
+    maven.updateModulePom("m", """
       <groupId>test</groupId>
       <artifactId>m2</artifactId>
       <version>1</version>
       """.trimIndent())
-    update(projectPom)
-    assertEquals("m2", tree.findProject(m)!!.mavenId.artifactId)
+    maven.update(maven.projectPom)
+    assertEquals("m2", maven.tree.findProject(m)!!.mavenId.artifactId)
   }
 
   @Test
   fun testUpdatingDoesNotUpdateModulesIfProjectIsNotChanged() = runBlocking {
-    createProjectPom("""
+    maven.createProjectPom("""
                        <groupId>test</groupId>
                        <artifactId>project</artifactId>
                        <version>1</version>
@@ -1101,28 +1148,28 @@ class MavenProjectsTreeReadingTest : MavenProjectsTreeTestCase() {
                          <module>m</module>
                        </modules>
                        """.trimIndent())
-    val m = createModulePom("m",
+    val m = maven.createModulePom("m",
                             """
                                       <groupId>test</groupId>
                                       <artifactId>m</artifactId>
                                       <version>1</version>
                                       """.trimIndent())
-    updateAll(projectPom)
-    assertEquals("m", tree.findProject(m)!!.mavenId.artifactId)
-    createModulePom("m", """
+    maven.updateAll(maven.projectPom)
+    assertEquals("m", maven.tree.findProject(m)!!.mavenId.artifactId)
+    maven.createModulePom("m", """
       <groupId>test</groupId>
       <artifactId>m2</artifactId>
       <version>1</version>
       """.trimIndent())
-    update(projectPom)
+    maven.update(maven.projectPom)
 
     // did not change
-    assertEquals("m", tree.findProject(m)!!.mavenId.artifactId)
+    assertEquals("m", maven.tree.findProject(m)!!.mavenId.artifactId)
   }
 
   @Test
   fun testAddingProjectAsModuleToExistingOne() = runBlocking {
-    createProjectPom("""
+    maven.createProjectPom("""
                        <groupId>test</groupId>
                        <artifactId>project</artifactId>
                        <version>1</version>
@@ -1131,37 +1178,37 @@ class MavenProjectsTreeReadingTest : MavenProjectsTreeTestCase() {
                          <module>m</module>
                        </modules>
                        """.trimIndent())
-    updateAll(projectPom)
-    var roots = tree.rootProjects
+    maven.updateAll(maven.projectPom)
+    var roots = maven.tree.rootProjects
     assertEquals(1, roots.size)
-    assertEquals(0, tree.getModules(roots[0]).size)
-    val m = createModulePom("m",
+    assertEquals(0, maven.tree.getModules(roots[0]).size)
+    val m = maven.createModulePom("m",
                             """
                                       <groupId>test</groupId>
                                       <artifactId>m</artifactId>
                                       <version>1</version>
                                       """.trimIndent())
-    update(m)
-    roots = tree.rootProjects
+    maven.update(m)
+    roots = maven.tree.rootProjects
     assertEquals(1, roots.size)
-    assertEquals(1, tree.getModules(roots[0]).size)
-    assertEquals(m, tree.getModules(roots[0])[0].file)
+    assertEquals(1, maven.tree.getModules(roots[0]).size)
+    assertEquals(m, maven.tree.getModules(roots[0])[0].file)
   }
 
   @Test
   fun testAddingProjectAsAggregatorForExistingOne() = runBlocking {
-    val m = createModulePom("m",
+    val m = maven.createModulePom("m",
                             """
                                       <groupId>test</groupId>
                                       <artifactId>m</artifactId>
                                       <version>1</version>
                                       """.trimIndent())
-    updateAll(m)
-    var roots = tree.rootProjects
+    maven.updateAll(m)
+    var roots = maven.tree.rootProjects
     assertEquals(1, roots.size)
     assertEquals(m, roots[0].file)
-    assertEquals(0, tree.getModules(roots[0]).size)
-    createProjectPom("""
+    assertEquals(0, maven.tree.getModules(roots[0]).size)
+    maven.createProjectPom("""
                        <groupId>test</groupId>
                        <artifactId>project</artifactId>
                        <version>1</version>
@@ -1170,27 +1217,27 @@ class MavenProjectsTreeReadingTest : MavenProjectsTreeTestCase() {
                          <module>m</module>
                        </modules>
                        """.trimIndent())
-    update(projectPom)
-    roots = tree.rootProjects
+    maven.update(maven.projectPom)
+    roots = maven.tree.rootProjects
     assertEquals(1, roots.size)
-    assertEquals(projectPom, roots[0].file)
-    assertEquals(1, tree.getModules(roots[0]).size)
-    assertEquals(m, tree.getModules(roots[0])[0].file)
+    assertEquals(maven.projectPom, roots[0].file)
+    assertEquals(1, maven.tree.getModules(roots[0]).size)
+    assertEquals(m, maven.tree.getModules(roots[0])[0].file)
   }
 
   @Test
   fun testAddingProjectWithModules() = runBlocking {
-    createProjectPom("""
+    maven.createProjectPom("""
                        <groupId>test</groupId>
                        <artifactId>project</artifactId>
                        <version>1</version>
                        <packaging>pom</packaging>
                        """.trimIndent())
-    updateAll(projectPom)
-    var roots = tree.rootProjects
+    maven.updateAll(maven.projectPom)
+    var roots = maven.tree.rootProjects
     assertEquals(1, roots.size)
-    assertEquals(0, tree.getModules(roots[0]).size)
-    val m1 = createModulePom("m1",
+    assertEquals(0, maven.tree.getModules(roots[0]).size)
+    val m1 = maven.createModulePom("m1",
                              """
                                        <groupId>test</groupId>
                                        <artifactId>m1</artifactId>
@@ -1200,44 +1247,44 @@ class MavenProjectsTreeReadingTest : MavenProjectsTreeTestCase() {
                                          <module>m2</module>
                                        </modules>
                                        """.trimIndent())
-    val m2 = createModulePom("m1/m2",
+    val m2 = maven.createModulePom("m1/m2",
                              """
                                        <groupId>test</groupId>
                                        <artifactId>m2</artifactId>
                                        <version>1</version>
                                        """.trimIndent())
-    update(m1)
-    roots = tree.rootProjects
+    maven.update(m1)
+    roots = maven.tree.rootProjects
     assertEquals(2, roots.size)
-    assertEquals(projectPom, roots[0].file)
+    assertEquals(maven.projectPom, roots[0].file)
     assertEquals(m1, roots[1].file)
-    assertEquals(1, tree.getModules(roots[1]).size)
-    assertEquals(m2, tree.getModules(roots[1])[0].file)
+    assertEquals(1, maven.tree.getModules(roots[1]).size)
+    assertEquals(m2, maven.tree.getModules(roots[1])[0].file)
   }
 
   @Test
   fun testUpdatingAddsModulesFromRootProjects() = runBlocking {
-    assumeModel_4_0_0("IDEA-379195")
-    createProjectPom("""
+    maven.assumeModel_4_0_0("IDEA-379195")
+    maven.createProjectPom("""
                        <groupId>test</groupId>
                        <artifactId>project</artifactId>
                        <version>1</version>
                        <packaging>pom</packaging>
                        """.trimIndent())
-    val m = createModulePom("m",
+    val m = maven.createModulePom("m",
                             """
                                       <groupId>test</groupId>
                                       <artifactId>m</artifactId>
                                       <version>1</version>
                                       """.trimIndent())
-    updateAll(projectPom, m)
-    var roots = tree.rootProjects
+    maven.updateAll(maven.projectPom, m)
+    var roots = maven.tree.rootProjects
     assertEquals(2, roots.size)
-    assertEquals(projectPom, roots[0].file)
+    assertEquals(maven.projectPom, roots[0].file)
     assertEquals(m, roots[1].file)
     assertEquals("m", roots[1].mavenId.artifactId)
-    assertEquals(0, tree.getModules(roots[0]).size)
-    updateProjectPom("""
+    assertEquals(0, maven.tree.getModules(roots[0]).size)
+    maven.updateProjectPom("""
                        <groupId>test</groupId>
                        <artifactId>project</artifactId>
                        <version>1</version>
@@ -1246,18 +1293,18 @@ class MavenProjectsTreeReadingTest : MavenProjectsTreeTestCase() {
                          <module>m</module>
                        </modules>
                        """.trimIndent())
-    update(projectPom)
-    roots = tree.rootProjects
+    maven.update(maven.projectPom)
+    roots = maven.tree.rootProjects
     assertEquals(1, roots.size)
-    assertEquals(projectPom, roots[0].file)
-    assertEquals(1, tree.getModules(roots[0]).size)
-    assertEquals(m, tree.getModules(roots[0])[0].file)
+    assertEquals(maven.projectPom, roots[0].file)
+    assertEquals(1, maven.tree.getModules(roots[0]).size)
+    assertEquals(m, maven.tree.getModules(roots[0])[0].file)
   }
 
   @Test
   fun testMovingModuleToRootsWhenAggregationChanged() = runBlocking {
-    assumeModel_4_0_0("4.1.0 model does not allow such case: - [FATAL] 'artifactId' contains an expression but should be a constant")
-    createProjectPom("""
+    maven.assumeModel_4_0_0("4.1.0 model does not allow such case: - [FATAL] 'artifactId' contains an expression but should be a constant")
+    maven.createProjectPom("""
                        <groupId>test</groupId>
                        <artifactId>project</artifactId>
                        <version>1</version>
@@ -1266,32 +1313,32 @@ class MavenProjectsTreeReadingTest : MavenProjectsTreeTestCase() {
                          <module>m</module>
                        </modules>
                        """.trimIndent())
-    val m = createModulePom("m",
+    val m = maven.createModulePom("m",
                             """
                                       <groupId>test</groupId>
                                       <artifactId>m</artifactId>
                                       <version>1</version>
                                       """.trimIndent())
-    updateAll(projectPom, m)
-    var roots = tree.rootProjects
+    maven.updateAll(maven.projectPom, m)
+    var roots = maven.tree.rootProjects
     assertEquals(1, roots.size)
-    assertEquals(1, tree.getModules(roots[0]).size)
-    updateProjectPom("""
+    assertEquals(1, maven.tree.getModules(roots[0]).size)
+    maven.updateProjectPom("""
                        <groupId>test</groupId>
                        <artifactId>project</artifactId>
                        <version>1</version>
                        <packaging>pom</packaging>
                        """.trimIndent())
-    update(projectPom)
-    roots = tree.rootProjects
+    maven.updateAll(maven.projectPom, m)
+    roots = maven.tree.rootProjects
     assertEquals(2, roots.size)
-    assertTrue(tree.getModules(roots[0]).isEmpty())
-    assertTrue(tree.getModules(roots[1]).isEmpty())
+    assertTrue(maven.tree.getModules(roots[0]).isEmpty())
+    assertTrue(maven.tree.getModules(roots[1]).isEmpty())
   }
 
   @Test
   fun testDeletingProject() = runBlocking {
-    createProjectPom("""
+    maven.createProjectPom("""
                        <groupId>test</groupId>
                        <artifactId>project</artifactId>
                        <version>1</version>
@@ -1300,25 +1347,25 @@ class MavenProjectsTreeReadingTest : MavenProjectsTreeTestCase() {
                          <module>m</module>
                        </modules>
                        """.trimIndent())
-    val m = createModulePom("m",
+    val m = maven.createModulePom("m",
                             """
                                       <groupId>test</groupId>
                                       <artifactId>m</artifactId>
                                       <version>1</version>
                                       """.trimIndent())
-    updateAll(projectPom)
-    var roots = tree.rootProjects
+    maven.updateAll(maven.projectPom)
+    var roots = maven.tree.rootProjects
     assertEquals(1, roots.size)
-    assertEquals(1, tree.getModules(roots[0]).size)
-    deleteProject(m)
-    roots = tree.rootProjects
+    assertEquals(1, maven.tree.getModules(roots[0]).size)
+    maven.deleteProject(m)
+    roots = maven.tree.rootProjects
     assertEquals(1, roots.size)
-    assertEquals(0, tree.getModules(roots[0]).size)
+    assertEquals(0, maven.tree.getModules(roots[0]).size)
   }
 
   @Test
   fun testDeletingProjectWithModules() = runBlocking {
-    createProjectPom("""
+    maven.createProjectPom("""
                        <groupId>test</groupId>
                        <artifactId>project</artifactId>
                        <version>1</version>
@@ -1327,7 +1374,7 @@ class MavenProjectsTreeReadingTest : MavenProjectsTreeTestCase() {
                          <module>m1</module>
                        </modules>
                        """.trimIndent())
-    val m1 = createModulePom("m1",
+    val m1 = maven.createModulePom("m1",
                              """
                                        <groupId>test</groupId>
                                        <artifactId>m1</artifactId>
@@ -1337,27 +1384,27 @@ class MavenProjectsTreeReadingTest : MavenProjectsTreeTestCase() {
                                          <module>m2</module>
                                        </modules>
                                        """.trimIndent())
-    createModulePom("m1/m2",
+    maven.createModulePom("m1/m2",
                     """
                       <groupId>test</groupId>
                       <artifactId>m2</artifactId>
                       <version>1</version>
                       """.trimIndent())
-    updateAll(projectPom)
-    var roots = tree.rootProjects
+    maven.updateAll(maven.projectPom)
+    var roots = maven.tree.rootProjects
     assertEquals(1, roots.size)
-    assertEquals(1, tree.getModules(roots[0]).size)
-    assertEquals(1, tree.getModules(tree.getModules(roots[0])[0]).size)
-    deleteProject(m1)
-    roots = tree.rootProjects
+    assertEquals(1, maven.tree.getModules(roots[0]).size)
+    assertEquals(1, maven.tree.getModules(maven.tree.getModules(roots[0])[0]).size)
+    maven.deleteProject(m1)
+    roots = maven.tree.rootProjects
     assertEquals(1, roots.size)
-    assertEquals(projectPom, roots[0].file)
-    assertEquals(0, tree.getModules(roots[0]).size)
+    assertEquals(maven.projectPom, roots[0].file)
+    assertEquals(0, maven.tree.getModules(roots[0]).size)
   }
 
   @Test
   fun testSendingNotificationsWhenProjectDeleted() = runBlocking {
-    createProjectPom("""
+    maven.createProjectPom("""
                        <groupId>test</groupId>
                        <artifactId>project</artifactId>
                        <version>1</version>
@@ -1366,7 +1413,7 @@ class MavenProjectsTreeReadingTest : MavenProjectsTreeTestCase() {
                          <module>m1</module>
                        </modules>
                        """.trimIndent())
-    val m1 = createModulePom("m1",
+    val m1 = maven.createModulePom("m1",
                              """
                                        <groupId>test</groupId>
                                        <artifactId>m1</artifactId>
@@ -1376,22 +1423,22 @@ class MavenProjectsTreeReadingTest : MavenProjectsTreeTestCase() {
                                          <module>m2</module>
                                        </modules>
                                        """.trimIndent())
-    createModulePom("m1/m2",
+    maven.createModulePom("m1/m2",
                     """
                       <groupId>test</groupId>
                       <artifactId>m2</artifactId>
                       <version>1</version>
                       """.trimIndent())
-    updateAll(projectPom)
+    maven.updateAll(maven.projectPom)
     val listener = MyLoggingListener()
-    tree.addListener(listener, getTestRootDisposable())
-    deleteProject(m1)
+    maven.project.messageBus.connect(maven.testRootDisposable).subscribe(MavenProjectsTree.Listener.TOPIC, listener)
+    maven.deleteProject(m1)
     assertEquals(log().add("updated").add("deleted", "m2", "m1"), listener.log)
   }
 
   @Test
   fun testReconnectModuleOfDeletedProjectIfModuleIsManaged() = runBlocking {
-    createProjectPom("""
+    maven.createProjectPom("""
                        <groupId>test</groupId>
                        <artifactId>project</artifactId>
                        <version>1</version>
@@ -1400,7 +1447,7 @@ class MavenProjectsTreeReadingTest : MavenProjectsTreeTestCase() {
                          <module>m1</module>
                        </modules>
                        """.trimIndent())
-    val m1 = createModulePom("m1",
+    val m1 = maven.createModulePom("m1",
                              """
                                        <groupId>test</groupId>
                                        <artifactId>m1</artifactId>
@@ -1410,84 +1457,80 @@ class MavenProjectsTreeReadingTest : MavenProjectsTreeTestCase() {
                                          <module>m2</module>
                                        </modules>
                                        """.trimIndent())
-    val m2 = createModulePom("m1/m2",
+    val m2 = maven.createModulePom("m1/m2",
                              """
                                        <groupId>test</groupId>
                                        <artifactId>m2</artifactId>
                                        <version>1</version>
                                        """.trimIndent())
-    updateAll(projectPom, m2)
-    var roots = tree.rootProjects
+    maven.updateAll(maven.projectPom, m2)
+    var roots = maven.tree.rootProjects
     assertEquals(1, roots.size)
-    assertEquals(1, tree.getModules(roots[0]).size)
-    assertEquals(1, tree.getModules(tree.getModules(roots[0])[0]).size)
-    val listener = MyLoggingListener()
-    tree.addListener(listener, getTestRootDisposable())
-    deleteProject(m1)
-    roots = tree.rootProjects
-    assertEquals(2, roots.size)
-    assertEquals(projectPom, roots[0].file)
-    assertEquals(0, tree.getModules(roots[0]).size)
-    assertEquals(m2, roots[1].file)
-    assertEquals(0, tree.getModules(roots[1]).size)
-    assertEquals(log().add("updated", "m2").add("deleted", "m1"), listener.log)
+    assertEquals(1, maven.tree.getModules(roots[0]).size)
+    assertEquals(1, maven.tree.getModules(maven.tree.getModules(roots[0])[0]).size)
+    maven.deleteProject(m1)
+    maven.updateAll(maven.projectPom, m2)
+    roots = maven.tree.rootProjects
+    assertEquals(1, roots.size)
+    assertEquals(1, maven.tree.getModules(roots[0]).size)
+    assertEquals(1, maven.tree.getModules(maven.tree.getModules(roots[0])[0]).size)
   }
 
   @Test
   fun testAddingProjectsOnUpdateAllWhenManagedFilesChanged() = runBlocking {
-    val m1 = createModulePom("m1",
+    val m1 = maven.createModulePom("m1",
                              """
                                        <groupId>test</groupId>
                                        <artifactId>m1</artifactId>
                                        <version>1</version>
                                        """.trimIndent())
-    val m2 = createModulePom("m2",
+    val m2 = maven.createModulePom("m2",
                              """
                                        <groupId>test</groupId>
                                        <artifactId>m2</artifactId>
                                        <version>1</version>
                                        """.trimIndent())
-    val m3 = createModulePom("m3",
+    val m3 = maven.createModulePom("m3",
                              """
                                        <groupId>test</groupId>
                                        <artifactId>m3</artifactId>
                                        <version>1</version>
                                        """.trimIndent())
-    updateAll(m1, m2)
-    assertEquals(2, tree.rootProjects.size)
-    updateAll(m1, m2, m3)
-    assertEquals(3, tree.rootProjects.size)
+    maven.updateAll(m1, m2)
+    assertEquals(2, maven.tree.rootProjects.size)
+    maven.updateAll(m1, m2, m3)
+    assertEquals(3, maven.tree.rootProjects.size)
   }
 
   @Test
   fun testDeletingProjectsOnUpdateAllWhenManagedFilesChanged() = runBlocking {
-    val m1 = createModulePom("m1",
+    val m1 = maven.createModulePom("m1",
                              """
                                        <groupId>test</groupId>
                                        <artifactId>m1</artifactId>
                                        <version>1</version>
                                        """.trimIndent())
-    val m2 = createModulePom("m2",
+    val m2 = maven.createModulePom("m2",
                              """
                                        <groupId>test</groupId>
                                        <artifactId>m2</artifactId>
                                        <version>1</version>
                                        """.trimIndent())
-    val m3 = createModulePom("m3",
+    val m3 = maven.createModulePom("m3",
                              """
                                        <groupId>test</groupId>
                                        <artifactId>m3</artifactId>
                                        <version>1</version>
                                        """.trimIndent())
-    updateAll(m1, m2, m3)
-    assertEquals(3, tree.rootProjects.size)
-    updateAll(m1, m2)
-    assertEquals(2, tree.rootProjects.size)
+    maven.updateAll(m1, m2, m3)
+    assertEquals(3, maven.tree.rootProjects.size)
+    maven.updateAll(m1, m2)
+    assertEquals(2, maven.tree.rootProjects.size)
   }
 
   @Test
   fun testSendingNotificationsWhenAddingOrDeletingManagedFiles() = runBlocking {
-    createProjectPom("""
+    maven.createProjectPom("""
                        <groupId>test</groupId>
                        <artifactId>parent</artifactId>
                        <version>1</version>
@@ -1496,32 +1539,30 @@ class MavenProjectsTreeReadingTest : MavenProjectsTreeTestCase() {
                          <module>m2</module>
                        </modules>
                        """.trimIndent())
-    val m1 = createModulePom("m1",
+    val m1 = maven.createModulePom("m1",
                              """
                                        <groupId>test</groupId>
                                        <artifactId>m1</artifactId>
                                        <version>1</version>
                                        """.trimIndent())
-    val m2 = createModulePom("m2",
+    val m2 = maven.createModulePom("m2",
                              """
                                        <groupId>test</groupId>
                                        <artifactId>m2</artifactId>
                                        <version>1</version>
                                        """.trimIndent())
     val l = MyLoggingListener()
-    tree.addListener(l, getTestRootDisposable())
-    tree.addManagedFilesWithProfiles(listOf(projectPom), MavenExplicitProfiles.NONE)
-    tree.updateAll(false, mavenGeneralSettings, mavenEmbedderWrappers, rawProgressReporter)
+    maven.project.messageBus.connect(maven.testRootDisposable).subscribe(MavenProjectsTree.Listener.TOPIC, l)
+    maven.tree.updateAll(listOf(maven.projectPom), false, maven.mavenGeneralSettings, MavenExplicitProfiles.NONE, maven.mavenEmbedderWrappers, maven.rawProgressReporter)
     assertEquals(log().add("updated", "parent", "m1", "m2").add("deleted"), l.log)
     l.log.clear()
-    tree.removeManagedFiles(listOf(projectPom))
-    tree.updateAll(false, mavenGeneralSettings, mavenEmbedderWrappers, rawProgressReporter)
+    maven.tree.updateAll(emptyList(), false, maven.mavenGeneralSettings, MavenExplicitProfiles.NONE, maven.mavenEmbedderWrappers, maven.rawProgressReporter)
     assertEquals(log().add("updated").add("deleted", "m1", "m2", "parent"), l.log)
   }
 
   @Test
   fun testUpdatingModelWhenActiveProfilesChange() = runBlocking {
-    createProjectPom("""
+    maven.createProjectPom("""
                        <groupId>test</groupId>
                        <artifactId>project</artifactId>
                        <version>1</version>
@@ -1547,7 +1588,7 @@ class MavenProjectsTreeReadingTest : MavenProjectsTreeTestCase() {
                          <sourceDirectory>${'$'}{prop}</sourceDirectory>
                        </build>
                        """.trimIndent())
-    createModulePom("m",
+    maven.createModulePom("m",
                     """
                       <groupId>test</groupId>
                       <artifactId>m</artifactId>
@@ -1561,26 +1602,26 @@ class MavenProjectsTreeReadingTest : MavenProjectsTreeTestCase() {
                         <sourceDirectory>${'$'}{prop}</sourceDirectory>
                       </build>
                       """.trimIndent())
-    importProjectWithProfiles("one")
-    val roots = tree.rootProjects
+    maven.importProjectWithProfiles("one")
+    val roots = maven.tree.rootProjects
     val parentNode = roots[0]
-    val childNode = tree.getModules(roots[0])[0]
+    val childNode = maven.tree.getModules(roots[0])[0]
     assertUnorderedPathsAreEqual(parentNode.sources, Arrays.asList(FileUtil.toSystemDependentName(
-      "$projectPath/value1")))
+      "${maven.projectPath}/value1")))
     assertUnorderedPathsAreEqual(childNode.sources, Arrays.asList(FileUtil.toSystemDependentName(
-      "$projectPath/m/value1")))
+      "${maven.projectPath}/m/value1")))
 
-    projectsManager.explicitProfiles = MavenExplicitProfiles(listOf("two"))
-    updateAllProjects()
+    maven.projectsManager.explicitProfiles = MavenExplicitProfiles(listOf("two"))
+    maven.updateAllProjects()
     assertUnorderedPathsAreEqual(parentNode.sources, Arrays.asList(FileUtil.toSystemDependentName(
-      "$projectPath/value2")))
+      "${maven.projectPath}/value2")))
     assertUnorderedPathsAreEqual(childNode.sources, Arrays.asList(FileUtil.toSystemDependentName(
-      "$projectPath/m/value2")))
+      "${maven.projectPath}/m/value2")))
   }
 
   @Test
   fun testDoNotUpdateModelWhenAggregatorProfilesXmlChange() = runBlocking {
-    createProjectPom("""
+    maven.createProjectPom("""
                        <groupId>test</groupId>
                        <artifactId>project</artifactId>
                        <version>1</version>
@@ -1589,7 +1630,7 @@ class MavenProjectsTreeReadingTest : MavenProjectsTreeTestCase() {
                          <module>m</module>
                        </modules>
                        """.trimIndent())
-    createModulePom("m",
+    maven.createModulePom("m",
                     """
                       <groupId>test</groupId>
                       <artifactId>m</artifactId>
@@ -1598,7 +1639,7 @@ class MavenProjectsTreeReadingTest : MavenProjectsTreeTestCase() {
                         <sourceDirectory>${'$'}{prop}</sourceDirectory>
                       </build>
                       """.trimIndent())
-    createProfilesXmlOldStyle("""
+    maven.createProfilesXmlOldStyle("""
                                 <profile>
                                  <id>one</id>
                                   <activation>
@@ -1609,8 +1650,8 @@ class MavenProjectsTreeReadingTest : MavenProjectsTreeTestCase() {
                                   </properties>
                                 </profile>
                                 """.trimIndent())
-    updateAll(projectPom)
-    createProfilesXmlOldStyle("""
+    maven.updateAll(maven.projectPom)
+    maven.createProfilesXmlOldStyle("""
                                 <profile>
                                   <id>one</id>
                                   <activation>
@@ -1621,10 +1662,9 @@ class MavenProjectsTreeReadingTest : MavenProjectsTreeTestCase() {
                                   </properties>
                                 </profile>
                                 """.trimIndent())
-    updateAll(projectPom)
-    val existingManagedFiles = tree.existingManagedFiles
-    val obsoleteFiles = tree.rootProjectsFiles
-    assertEquals(existingManagedFiles, obsoleteFiles)
+    maven.updateAll(maven.projectPom)
+    val obsoleteFiles = maven.tree.rootProjectsFiles
+    assertEquals(listOf(maven.projectPom), obsoleteFiles)
   }
 
   @Test
@@ -1632,7 +1672,7 @@ class MavenProjectsTreeReadingTest : MavenProjectsTreeTestCase() {
     //todo: move to resolver test
     // stripping down plugins
     // stripping down Xpp3Dom fields
-    createProjectPom("""
+    maven.createProjectPom("""
                        <groupId>test</groupId>
                        <artifactId>project</artifactId>
                        <version>1</version>
@@ -1656,29 +1696,29 @@ class MavenProjectsTreeReadingTest : MavenProjectsTreeTestCase() {
                          <someTag/>
                        </reports>
                        """.trimIndent())
-    val m1 = createModulePom("m1",
+    val m1 = maven.createModulePom("m1",
                              """
                                        <groupId>test</groupId>
                                        <artifactId>m1</artifactId>
                                        <version>1</version>
                                        """.trimIndent())
-    val m2 = createModulePom("m2",
+    val m2 = maven.createModulePom("m2",
                              """
                                        <groupId>test</groupId>
                                        <artifactId>m2</artifactId>
                                        <version>1</version>
                                        """.trimIndent())
-    updateAll(projectPom)
-    val parentProject = tree.findProject(projectPom)
-    resolve(project, parentProject!!, mavenGeneralSettings)
-    val f = dir.resolve("tree.dat")
-    tree.save(f)
-    val read = MavenProjectsTree(project)
+    maven.updateAll(maven.projectPom)
+    val parentProject = maven.tree.findProject(maven.projectPom)
+    maven.resolve(maven.project, parentProject!!, maven.mavenGeneralSettings)
+    val f = maven.dir.resolve("tree.dat")
+    maven.tree.save(f)
+    val read = MavenProjectsTree(maven.project)
     read.read(f)
     val roots = read!!.rootProjects
     assertEquals(1, roots.size)
     val rootProject = roots[0]
-    assertEquals(projectPom, rootProject.file)
+    assertEquals(maven.projectPom, rootProject.file)
     assertEquals(2, read.getModules(rootProject).size)
     assertEquals(m1, read.getModules(rootProject)[0].file)
     assertEquals(m2, read.getModules(rootProject)[1].file)
@@ -1689,7 +1729,7 @@ class MavenProjectsTreeReadingTest : MavenProjectsTreeTestCase() {
 
   @Test
   fun testCollectingProfilesFromSettingsXml() = runBlocking {
-    createProjectPom("""
+    maven.createProjectPom("""
                        <groupId>test</groupId>
                        <artifactId>project</artifactId>
                        <version>1</version>
@@ -1699,20 +1739,20 @@ class MavenProjectsTreeReadingTest : MavenProjectsTreeTestCase() {
                          </profile>
                        </profiles>
                        """.trimIndent())
-    updateSettingsXml("""
+    maven.updateSettingsXml("""
                         <profiles>
                           <profile>
                             <id>three</id>
                           </profile>
                         </profiles>
                         """.trimIndent())
-    updateAll(projectPom)
-    assertUnorderedElementsAreEqual(tree.availableProfiles, "one", "three")
+    maven.updateAll(maven.projectPom)
+    assertUnorderedElementsAreEqual(maven.tree.availableProfiles, "one", "three")
   }
 
   @Test
   fun testCollectingProfilesFromSettingsXmlAfterResolve() = runBlocking {
-    createProjectPom("""
+    maven.createProjectPom("""
                        <groupId>test</groupId>
                        <artifactId>project</artifactId>
                        <version>1</version>
@@ -1722,22 +1762,22 @@ class MavenProjectsTreeReadingTest : MavenProjectsTreeTestCase() {
                          </profile>
                        </profiles>
                        """.trimIndent())
-    updateSettingsXml("""
+    maven.updateSettingsXml("""
                         <profiles>
                           <profile>
                             <id>three</id>
                           </profile>
                         </profiles>
                         """.trimIndent())
-    updateAll(projectPom)
-    resolve(project, tree.rootProjects[0], mavenGeneralSettings)
-    assertUnorderedElementsAreEqual(tree.availableProfiles, "one", "three")
+    maven.updateAll(maven.projectPom)
+    maven.resolve(maven.project, maven.tree.rootProjects[0], maven.mavenGeneralSettings)
+    assertUnorderedElementsAreEqual(maven.tree.availableProfiles, "one", "three")
   }
 
   @Test
   fun testCollectingProfilesFromParentsAfterResolve() = runBlocking {
-    projectsManager.initForTests()
-    val parent1 = createModulePom("parent1",
+    maven.projectsManager.initForTests()
+    val parent1 = maven.createModulePom("parent1",
                                   """
                       <groupId>test</groupId>
                       <artifactId>parent1</artifactId>
@@ -1750,7 +1790,7 @@ class MavenProjectsTreeReadingTest : MavenProjectsTreeTestCase() {
                       </profiles>
                       """.trimIndent())
 
-    val parent2 = createModulePom("parent2",
+    val parent2 = maven.createModulePom("parent2",
                                   """
                       <groupId>test</groupId>
                       <artifactId>parent2</artifactId>
@@ -1769,7 +1809,7 @@ class MavenProjectsTreeReadingTest : MavenProjectsTreeTestCase() {
                       </profiles>
                       """.trimIndent())
 
-    createProjectPom("""
+    maven.createProjectPom("""
                        <groupId>test</groupId>
                        <artifactId>project</artifactId>
                        <version>1</version>
@@ -1786,7 +1826,7 @@ class MavenProjectsTreeReadingTest : MavenProjectsTreeTestCase() {
                        </profiles>
                        """.trimIndent())
 
-    updateSettingsXml("""
+    maven.updateSettingsXml("""
                         <profiles>
                           <profile>
                             <id>settings</id>
@@ -1794,84 +1834,32 @@ class MavenProjectsTreeReadingTest : MavenProjectsTreeTestCase() {
                         </profiles>
                         """.trimIndent())
 
-    projectsManager.explicitProfiles = MavenExplicitProfiles(listOf("projectProfile",
+    maven.importProjectAsync()
+    maven.projectsManager.explicitProfiles = MavenExplicitProfiles(listOf("projectProfile",
                                                                     "parent1Profile",
                                                                     "parent2Profile",
                                                                     "settings",
                                                                     "xxx"))
-    importProjectAsync()
-    val mavenProject = tree.findProject(projectPom)!!
+    maven.updateAllProjects()
+    val mavenProject = maven.tree.findProject(maven.projectPom)!!
     assertUnorderedElementsAreEqual(
       mavenProject.activatedProfilesIds.enabledProfiles,
       "projectProfile",
       "parent1Profile",
       "parent2Profile",
       "settings")
-    resolve(project, mavenProject, mavenGeneralSettings)
+    maven.updateAllProjects()
     assertUnorderedElementsAreEqual(
       mavenProject.activatedProfilesIds.enabledProfiles,
       "projectProfile",
       "parent1Profile",
       "parent2Profile",
       "settings")
-  }
-
-  @Test
-  fun testDeletingAndRestoringActiveProfilesWhenProjectDeletes() = runBlocking {
-    createProjectPom("""
-                       <groupId>test</groupId>
-                       <artifactId>project</artifactId>
-                       <version>1</version>
-                       <packaging>pom</packaging>
-                       <profiles>
-                         <profile>
-                           <id>one</id>
-                         </profile>
-                       </profiles>
-                       <modules>
-                         <module>m</module>
-                       </modules>
-                       """.trimIndent())
-    var m = createModulePom("m",
-                            """
-                                      <groupId>test</groupId>
-                                      <artifactId>m</artifactId>
-                                      <version>1</version>
-                                      <profiles>
-                                        <profile>
-                                          <id>two</id>
-                                        </profile>
-                                      </profiles>
-                                      """.trimIndent())
-    updateAll(mutableListOf<String?>("one", "two"), projectPom)
-    assertUnorderedElementsAreEqual(
-      tree.explicitProfiles.enabledProfiles, "one", "two")
-    edtWriteAction {
-      m.delete(this)
-    }
-    deleteProject(m)
-
-    assertUnorderedElementsAreEqual(
-      tree.explicitProfiles.enabledProfiles, "one")
-    m = createModulePom("m",
-                        """
-                          <groupId>test</groupId>
-                          <artifactId>m</artifactId>
-                          <version>1</version>
-                          <profiles>
-                            <profile>
-                              <id>two</id>
-                            </profile>
-                          </profiles>
-                          """.trimIndent())
-    update(m)
-    assertUnorderedElementsAreEqual(
-      tree.explicitProfiles.enabledProfiles, "one", "two")
   }
 
   @Test
   fun testFindRootWithMultiLevelAggregator() = runBlocking {
-    val p1 = createModulePom("project1", """
+    val p1 = maven.createModulePom("project1", """
       <groupId>test</groupId>
       <artifactId>project1</artifactId>
       <version>1</version>
@@ -1882,7 +1870,7 @@ class MavenProjectsTreeReadingTest : MavenProjectsTreeTestCase() {
       """
       .trimIndent()
     )
-    val p2 = createModulePom("project2", """
+    val p2 = maven.createModulePom("project2", """
       <groupId>test</groupId>
       <artifactId>project2</artifactId>
       <version>1</version>
@@ -1893,33 +1881,33 @@ class MavenProjectsTreeReadingTest : MavenProjectsTreeTestCase() {
       """
       .trimIndent()
     )
-    val m = createModulePom("module", """
+    val m = maven.createModulePom("module", """
       <groupId>test</groupId>
       <artifactId>module</artifactId>
       <version>1</version>
       """
       .trimIndent()
     )
-    updateAll(p1, p2, m)
-    val roots = tree.rootProjects
+    maven.updateAll(p1, p2, m)
+    val roots = maven.tree.rootProjects
     assertEquals(1, roots.size)
     val p1Project = roots[0]
     assertEquals(p1, p1Project.file)
-    assertEquals(p1Project, tree.findRootProject(p1Project))
-    assertEquals(1, tree.getModules(p1Project).size)
-    val p2Project = tree.getModules(p1Project)[0]
+    assertEquals(p1Project, maven.tree.findRootProject(p1Project))
+    assertEquals(1, maven.tree.getModules(p1Project).size)
+    val p2Project = maven.tree.getModules(p1Project)[0]
     assertEquals(p2, p2Project.file)
-    assertEquals(p1Project, tree.findRootProject(p2Project))
-    assertEquals(1, tree.getModules(p2Project).size)
-    val mProject = tree.getModules(p2Project)[0]
+    assertEquals(p1Project, maven.tree.findRootProject(p2Project))
+    assertEquals(1, maven.tree.getModules(p2Project).size)
+    val mProject = maven.tree.getModules(p2Project)[0]
     assertEquals(m, mProject.file)
-    assertEquals(p1Project, tree.findRootProject(mProject))
-    assertEquals(0, tree.getModules(mProject).size)
+    assertEquals(p1Project, maven.tree.findRootProject(mProject))
+    assertEquals(0, maven.tree.getModules(mProject).size)
   }
 
   @Test
   fun testOutputPathsAreBasedOnTargetPathWhenResolving() = runBlocking {
-    createProjectPom("""
+    maven.createProjectPom("""
                        <groupId>test</groupId>
                        <artifactId>project</artifactId>
                        <version>1</version>
@@ -1927,17 +1915,17 @@ class MavenProjectsTreeReadingTest : MavenProjectsTreeTestCase() {
                          <directory>my-target</directory>
                        </build>
                        """.trimIndent())
-    importProjectAsync()
-    val mavenProject = tree.rootProjects[0]
+    maven.importProjectAsync()
+    val mavenProject = maven.tree.rootProjects[0]
 
-    PlatformTestUtil.assertPathsEqual(pathFromBasedir("my-target"), mavenProject.buildDirectory)
-    PlatformTestUtil.assertPathsEqual(pathFromBasedir("my-target/classes"), mavenProject.outputDirectory)
-    PlatformTestUtil.assertPathsEqual(pathFromBasedir("my-target/test-classes"), mavenProject.testOutputDirectory)
+    PlatformTestUtil.assertPathsEqual(maven.pathFromBasedir("my-target"), mavenProject.buildDirectory)
+    PlatformTestUtil.assertPathsEqual(maven.pathFromBasedir("my-target/classes"), mavenProject.outputDirectory)
+    PlatformTestUtil.assertPathsEqual(maven.pathFromBasedir("my-target/test-classes"), mavenProject.testOutputDirectory)
   }
 
   @Test
   fun testReadProjectsWithDynamicVersion() = runBlocking {
-    val firstRootWithChild = createModulePom("parentone",
+    val firstRootWithChild = maven.createModulePom("parentone",
                                              $$"""
                              <groupId>test</groupId>
                              <artifactId>parentone</artifactId>
@@ -1950,7 +1938,7 @@ class MavenProjectsTreeReadingTest : MavenProjectsTreeTestCase() {
                                  <module>child</module>
                              </modules>
                              """.trimIndent())
-    val child = createModulePom("parentone/child",
+    val child = maven.createModulePom("parentone/child",
                                 $$"""
                              <parent>
                                <groupId>test</groupId>
@@ -1959,18 +1947,18 @@ class MavenProjectsTreeReadingTest : MavenProjectsTreeTestCase() {
                              </parent>
                               <artifactId>child</artifactId>
                              """.trimIndent())
-    val m2 = createModulePom("m2",
+    val m2 = maven.createModulePom("m2",
                              """
                              <groupId>test</groupId>
                              <artifactId>m2</artifactId>
                              <version>1</version>
                              """.trimIndent())
 
-    updateAll(firstRootWithChild, m2)
-    val roots = tree.rootProjects
+    maven.updateAll(firstRootWithChild, m2)
+    val roots = maven.tree.rootProjects
     assertEquals(2, roots.size)
     assertSameElements(
-      tree.workspaceMap.availableIds,
+      maven.tree.workspaceMap.availableIds,
       MavenId("test:parentone:1.0"),
       MavenId("test:parentone:RELEASE"),
       MavenId("test:parentone:LATEST"),

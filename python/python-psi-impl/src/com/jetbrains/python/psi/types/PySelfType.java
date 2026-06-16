@@ -5,7 +5,7 @@ import com.intellij.psi.PsiElement;
 import com.intellij.util.ProcessingContext;
 import com.intellij.util.Processor;
 import com.jetbrains.python.psi.AccessDirection;
-import com.jetbrains.python.psi.PyCallSiteExpression;
+import com.jetbrains.python.psi.PyCallSiteOwner;
 import com.jetbrains.python.psi.PyCallable;
 import com.jetbrains.python.psi.PyClass;
 import com.jetbrains.python.psi.PyExpression;
@@ -131,12 +131,12 @@ public final class PySelfType implements PyTypeParameterType, PyClassType {
   }
 
   @Override
-  public @NotNull List<? extends @NotNull PyTypeMember> getAllMembers(@NotNull PyResolveContext resolveContext) {
+  public @NotNull List<@NotNull PyTypeMember> getAllMembers(@NotNull PyResolveContext resolveContext) {
     return myScopeClassType.getAllMembers(resolveContext);
   }
 
   @Override
-  public @NotNull List<? extends @NotNull PyTypeMember> findMember(@NotNull String name, @NotNull PyResolveContext resolveContext) {
+  public @NotNull List<@NotNull PyTypeMember> findMember(@NotNull String name, @NotNull PyResolveContext resolveContext) {
     return myScopeClassType.findMember(name, resolveContext);
   }
 
@@ -166,7 +166,7 @@ public final class PySelfType implements PyTypeParameterType, PyClassType {
   }
 
   @Override
-  public @Nullable PyType getCallType(@NotNull TypeEvalContext context, @NotNull PyCallSiteExpression callSite) {
+  public @Nullable PyType getCallType(@NotNull TypeEvalContext context, @NotNull PyCallSiteOwner callSite) {
     if (isDefinition()) {
       return toInstance();
     }

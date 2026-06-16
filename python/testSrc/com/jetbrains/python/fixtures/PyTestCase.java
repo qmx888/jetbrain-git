@@ -1,4 +1,4 @@
-// Copyright 2000-2021 JetBrains s.r.o. Use of this source code is governed by the Apache 2.0 license that can be found in the LICENSE file.
+// Copyright 2000-2026 JetBrains s.r.o. and contributors. Use of this source code is governed by the Apache 2.0 license.
 package com.jetbrains.python.fixtures;
 
 import com.google.common.base.Joiner;
@@ -25,6 +25,7 @@ import com.intellij.openapi.roots.OrderRootType;
 import com.intellij.openapi.roots.impl.FilePropertyPusher;
 import com.intellij.openapi.util.Disposer;
 import com.intellij.openapi.util.TextRange;
+import com.intellij.openapi.util.registry.Registry;
 import com.intellij.openapi.vfs.LocalFileSystem;
 import com.intellij.openapi.vfs.StandardFileSystems;
 import com.intellij.openapi.vfs.VfsUtil;
@@ -84,6 +85,7 @@ import org.jetbrains.annotations.Nullable;
 import org.junit.Assert;
 
 import java.io.File;
+import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
@@ -107,7 +109,8 @@ public abstract class PyTestCase extends UsefulTestCase {
     super.setUp();
 
     IdeaTestFixtureFactory factory = IdeaTestFixtureFactory.getFixtureFactory();
-    TestFixtureBuilder<IdeaProjectTestFixture> fixtureBuilder = factory.createLightFixtureBuilder(getProjectDescriptor(), getTestName(false));
+    TestFixtureBuilder<IdeaProjectTestFixture> fixtureBuilder =
+      factory.createLightFixtureBuilder(getProjectDescriptor(), getTestName(false));
     final IdeaProjectTestFixture fixture = fixtureBuilder.getFixture();
     myFixture = IdeaTestFixtureFactory.getFixtureFactory().createCodeInsightFixture(fixture, createTempDirFixture());
     myFixture.setTestDataPath(getTestDataPath());
@@ -249,7 +252,7 @@ public abstract class PyTestCase extends UsefulTestCase {
   protected void runWithAdditionalClassEntryInSdkRoots(@NotNull VirtualFile directory, @NotNull Runnable runnable) {
     final Sdk sdk = PythonSdkUtil.findPythonSdk(myFixture.getModule());
     assertNotNull(sdk);
-    runWithAdditionalRoot(sdk, directory, OrderRootType.CLASSES, (__) -> runnable.run());
+    runWithAdditionalRoot(sdk, directory, OrderRootType.CLASSES, (_) -> runnable.run());
   }
 
   protected void runWithAdditionalClassEntryInSdkRoots(@NotNull String relativeTestDataPath, @NotNull Runnable runnable) {
@@ -309,6 +312,35 @@ public abstract class PyTestCase extends UsefulTestCase {
     IndexingTestUtil.waitUntilIndexesAreReadyInAllOpenedProjects();
   }
 
+  protected void enableTestDataTypeshedStubsForPackages(String @NotNull ... packageNames) throws IOException {
+    final String absPath = getTestDataPath() + "/resolve/typeshed/stubs";
+    final VirtualFile sourceThirdPartyStubRoot = LocalFileSystem.getInstance().refreshAndFindFileByPath(absPath);
+    assertNotNull("Third-party typeshed root '" + absPath + "' not found", sourceThirdPartyStubRoot);
+
+    final VirtualFile targetThirdPartyStubRoot = PyTypeShed.INSTANCE.getThirdPartyStubRoot();
+    assertNotNull("Bundled third-party typeshed root not found", targetThirdPartyStubRoot);
+
+    final List<VirtualFile> copiedStubRoots = new ArrayList<>();
+    WriteAction.run(() -> {
+      for (String packageName : packageNames) {
+        final VirtualFile sourceStubRoot = sourceThirdPartyStubRoot.findChild(packageName);
+        assertNotNull("Stub package root for " + packageName + " not found under " + absPath, sourceStubRoot);
+
+        final VirtualFile existingStubRoot = targetThirdPartyStubRoot.findChild(packageName);
+        if (existingStubRoot != null) {
+          VfsTestUtil.deleteFile(existingStubRoot);
+        }
+
+        final VirtualFile targetStubRoot = VfsTestUtil.createDir(targetThirdPartyStubRoot, packageName);
+        VfsUtil.copyDirectory(this, sourceStubRoot, targetStubRoot, null);
+        copiedStubRoots.add(targetStubRoot);
+      }
+    });
+
+    Disposer.register(getTestRootDisposable(), () -> WriteAction.run(() -> copiedStubRoots.forEach(VfsTestUtil::deleteFile)));
+    enablePyiStubsForPackages(packageNames);
+  }
+
   protected void enablePyiStubsForPackages(String @NotNull ... packageNames) {
     Sdk sdk = PythonSdkUtil.findPythonSdk(myFixture.getModule());
     assertNotNull(sdk);
@@ -349,7 +381,7 @@ public abstract class PyTestCase extends UsefulTestCase {
     return PsiDocumentManager.getInstance(myFixture.getProject()).getDocument(myFixture.getFile()).getText().indexOf(signature);
   }
 
-  private void setLanguageLevel(@Nullable LanguageLevel languageLevel) {
+  protected void setLanguageLevel(@Nullable LanguageLevel languageLevel) {
     Project project = myFixture.getProject();
     if (project != null) {
       PythonLanguageLevelPusher.setForcedLanguageLevel(project, languageLevel);
@@ -399,7 +431,10 @@ public abstract class PyTestCase extends UsefulTestCase {
     String path = virtualFile.getPath();
     String name = virtualFile.getName();
     String errorMessage = "Operations should have been performed on stubs but caused file to be parsed: " + path;
-    String tip = "As a starting point for an investigation, a breakpoint can be set in com.intellij.psi.impl.source.PsiFileImpl#loadTreeElement with a condition `getName().equals(\"" + name + "\")`.\nThen the stacktrace can be investigated to find the root cause.";
+    String tip =
+      "As a starting point for an investigation, a breakpoint can be set in com.intellij.psi.impl.source.PsiFileImpl#loadTreeElement with a condition `getName().equals(\"" +
+      name +
+      "\")`.\nThen the stacktrace can be investigated to find the root cause.";
     assertNull(errorMessage + "\n" + tip,
                ((PyFileImpl)file).getTreeElement());
   }
@@ -644,20 +679,49 @@ public abstract class PyTestCase extends UsefulTestCase {
     }
   }
 
-  public static void fixme(@NotNull String comment, @NotNull Class<? extends Throwable> c, @NotNull Runnable test) {
+  public static void fixme(@NotNull String comment,
+                           @NotNull Class<? extends Throwable> expectedErrorClass,
+                           @NotNull String anticipatedMessage,
+                           @NotNull Runnable test) {
     try {
       test.run();
     }
     catch (Throwable failedError) {
-      if (c.isInstance(failedError) ||
-          failedError instanceof TestLoggerFactory.TestLoggerAssertionError testLoggerError && c.isInstance(testLoggerError.getCause())) {
-        // fix-me tests are supposed to fail
-        return;
+      if (
+        expectedErrorClass.isInstance(failedError)
+        || failedError instanceof TestLoggerFactory.TestLoggerAssertionError testLoggerError
+           && expectedErrorClass.isInstance(testLoggerError.getCause())
+      ) {
+        if (failedError.getMessage().contains(anticipatedMessage)) {
+          // fix-me tests are supposed to fail
+          return;
+        }
+        throw new AssertionError(
+          "Test " +
+          comment +
+          " expected the incorrect error message '" +
+          anticipatedMessage +
+          "' was not found in actual message '" +
+          failedError.getMessage() +
+          "'",
+          failedError
+        );
       }
       throw failedError;
     }
     // the fix-me test passed -> the bug/feature was fixed!
     fail("Test " + comment + " was previously failing and was suppressed, but now it passes");
   }
-}
 
+  protected static void withNewAnyTypeEnabled(@NotNull Runnable test) {
+    var key = Registry.get("python.type.any");
+    var previousValue = key.asBoolean();
+    try {
+      key.setValue(true);
+      test.run();
+    }
+    finally {
+      key.setValue(previousValue);
+    }
+  }
+}

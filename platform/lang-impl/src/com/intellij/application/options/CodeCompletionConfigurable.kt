@@ -1,6 +1,5 @@
 // Copyright 2000-2022 JetBrains s.r.o. and contributors. Use of this source code is governed by the Apache 2.0 license.
 package com.intellij.application.options
-
 import com.intellij.application.options.editor.EditorOptionsProvider
 import com.intellij.codeInsight.CodeInsightSettings
 import com.intellij.codeInsight.daemon.DaemonCodeAnalyzer
@@ -10,11 +9,14 @@ import com.intellij.lang.LangBundle
 import com.intellij.openapi.actionSystem.ActionManager
 import com.intellij.openapi.actionSystem.IdeActions
 import com.intellij.openapi.application.ApplicationBundle
+import com.intellij.openapi.components.PersistentStateComponent
 import com.intellij.openapi.diagnostic.Logger
 import com.intellij.openapi.editor.ex.EditorSettingsExternalizable
 import com.intellij.openapi.extensions.BaseExtensionPointName
 import com.intellij.openapi.keymap.KeymapUtil
+import com.intellij.openapi.options.BackedByPersistentState
 import com.intellij.openapi.options.BoundCompositeConfigurable
+import org.jetbrains.annotations.ApiStatus
 import com.intellij.openapi.options.Configurable
 import com.intellij.openapi.options.Configurable.WithEpDependencies
 import com.intellij.openapi.options.UnnamedConfigurable
@@ -24,6 +26,7 @@ import com.intellij.openapi.ui.DialogPanel
 import com.intellij.ui.IdeUICustomization
 import com.intellij.ui.components.JBCheckBox
 import com.intellij.ui.components.JBRadioButton
+import com.intellij.ui.dsl.builder.BottomGap
 import com.intellij.ui.dsl.builder.Cell
 import com.intellij.ui.dsl.builder.Panel
 import com.intellij.ui.dsl.builder.RightGap
@@ -36,13 +39,22 @@ import com.intellij.ui.dsl.builder.selected
 import com.intellij.ui.layout.selected
 
 class CodeCompletionConfigurable : BoundCompositeConfigurable<UnnamedConfigurable>(
-  ApplicationBundle.message("title.code.completion"), "reference.settingsdialog.IDE.editor.code.completion"),
-                              EditorOptionsProvider, WithEpDependencies {
+  ApplicationBundle.message("title.code.completion.popup"), "reference.settingsdialog.IDE.editor.code.completion"),
+                              EditorOptionsProvider, WithEpDependencies, BackedByPersistentState {
 
+  @ApiStatus.Internal
   companion object {
-    const val ID: String = "editor.preferences.completion"
+    const val ID: String = "editor.preferences.completion.popup"
     private val LOG = Logger.getInstance(CodeCompletionConfigurable::class.java)
   }
+
+  @ApiStatus.Internal
+  override fun getBackingComponents(): Collection<PersistentStateComponent<*>> =
+    listOf(
+      CodeInsightSettings.getInstance(),
+      UISettings.getInstance(),
+      EditorSettingsExternalizable.getInstance(),
+    )
 
   private lateinit var cbMatchCase: JBCheckBox
   private lateinit var rbLettersOnly: JBRadioButton
@@ -114,6 +126,9 @@ class CodeCompletionConfigurable : BoundCompositeConfigurable<UnnamedConfigurabl
     val settings = CodeInsightSettings.getInstance()
 
     return panel {
+      row {
+        text(ApplicationBundle.message("completion.description"))
+      }.bottomGap(BottomGap.SMALL)
       buttonsGroup {
         row {
           cbMatchCase = checkBox(ApplicationBundle.message("completion.option.match.case"))

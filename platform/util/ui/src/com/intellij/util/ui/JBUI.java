@@ -1,4 +1,4 @@
-// Copyright 2000-2025 JetBrains s.r.o. and contributors. Use of this source code is governed by the Apache 2.0 license.
+// Copyright 2000-2026 JetBrains s.r.o. and contributors. Use of this source code is governed by the Apache 2.0 license.
 package com.intellij.util.ui;
 
 import com.intellij.icons.AllIcons;
@@ -16,7 +16,8 @@ import com.intellij.ui.border.NamedBorderKt;
 import com.intellij.ui.scale.DerivedScaleType;
 import com.intellij.ui.scale.JBUIScale;
 import com.intellij.util.ui.components.BorderLayoutPanel;
-import org.jetbrains.annotations.ApiStatus;
+import org.jetbrains.annotations.ApiStatus.Experimental;
+import org.jetbrains.annotations.ApiStatus.Internal;
 import org.jetbrains.annotations.NonNls;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
@@ -595,14 +596,6 @@ public final class JBUI {
         return JBColor.namedColor("DefaultTabs.underlineColor", new JBColor(0x4083C9, 0x4A88C7));
       }
 
-      /**
-       * @deprecated use {@link DefaultTabs#UNDERLINE_HEIGHT}
-       */
-      @Deprecated(forRemoval = true)
-      public static int underlineHeight() {
-        return UNDERLINE_HEIGHT.get();
-      }
-
       public static @NotNull Color inactiveUnderlineColor() {
         return JBColor.namedColor("DefaultTabs.inactiveUnderlineColor", new JBColor(0x9ca7b8, 0x747a80));
       }
@@ -926,6 +919,10 @@ public final class JBUI {
     }
 
     public interface IconBadge {
+      /**
+       * @deprecated Not needed anymore
+       */
+      @Deprecated(forRemoval = true)
       Color NEW_UI = JBColor.namedColor("IconBadge.newUiBackground", 0x8F5AE5, 0x8F5AE5);
       Color ERROR = JBColor.namedColor("IconBadge.errorBackground", 0xE55765, 0xDB5C5C);
       Color WARNING = JBColor.namedColor("IconBadge.warningBackground", 0xFFAF0F, 0xF2C55C);
@@ -982,7 +979,7 @@ public final class JBUI {
       /**
        * @deprecated Use {@link Widget#HOVER_BACKGROUND} instead.
        */
-      @Deprecated
+      @Deprecated(forRemoval = true)
       public static Color hoverBackground() {
         return Widget.HOVER_BACKGROUND;
       }
@@ -1680,6 +1677,26 @@ public final class JBUI {
       }
     }
 
+    public static final class MainMenu {
+      private MainMenu() { }
+
+      public static final class Selection {
+        private Selection() { }
+
+        public static @NotNull JBInsets outerInsets() {
+          return insets("MainMenu.Selection.outerInsets", insets(5, 0));
+        }
+
+        public static @NotNull JBInsets fullScreenOuterInsets() {
+          return insets("MainMenu.Selection.fullScreenOuterInsets", insets(2, 0));
+        }
+
+        public static @NotNull JBValue fullScreenArc() {
+          return new JBValue.UIInteger("MainToolbar.Selection.fullScreenArc", 8);
+        }
+      }
+    }
+
     public static final class Separator {
       private Separator() { }
       public static @NotNull Color color() {
@@ -1753,6 +1770,12 @@ public final class JBUI {
         return JBInsets.create(0, 12);
       }
 
+      @Internal
+      @Experimental
+      public static @NotNull Insets headerToolbarInsets() {
+        return insets("SearchEverywhere.Header.toolbarInsets", insets(2, 18, 2, 9));
+      }
+
       public static @NotNull Color selectedTabColor() {
         return JBColor.namedColor("SearchEverywhere.Tab.selectedBackground", 0xdedede);
       }
@@ -1784,7 +1807,7 @@ public final class JBUI {
       public static final @NotNull Color LIST_SETTINGS_BACKGROUND =
         JBColor.namedColor("SearchEverywhere.List.settingsBackground", LightColors.SLIGHTLY_GRAY);
 
-      @ApiStatus.Internal
+      @Internal
       public static @NotNull Color getListSettingsBackground() {
         // For custom UI themes we need to keep the old behavior
         if (StartupUiUtil.isUnderDarcula() && UIManager.get("SearchEverywhere.List.settingsBackground") == null) {
@@ -2708,7 +2731,7 @@ public final class JBUI {
       }
     }
 
-    @ApiStatus.Internal
+    @Internal
     public static final class LicenseDialog {
       private static final @NotNull Color TERMS_AND_CONDITIONS_COLOR =
         JBColor.namedColor("LicenseDialog.termsAndConditionsForeground", 0x818594, 0x6F737A);

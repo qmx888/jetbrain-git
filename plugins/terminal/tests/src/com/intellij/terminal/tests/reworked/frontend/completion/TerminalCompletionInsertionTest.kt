@@ -12,6 +12,7 @@ import org.jetbrains.plugins.terminal.block.completion.TerminalCommandCompletion
 import org.jetbrains.plugins.terminal.block.completion.spec.ShellCommandSpec
 import org.jetbrains.plugins.terminal.block.completion.spec.ShellCompletionSuggestion
 import org.jetbrains.plugins.terminal.session.impl.TerminalStartupOptionsImpl
+import org.jetbrains.plugins.terminal.startup.TerminalProcessType
 import org.jetbrains.plugins.terminal.view.TerminalOffset
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -66,6 +67,19 @@ internal class TerminalCompletionInsertionTest : BasePlatformTestCase() {
               ShellCompletionSuggestion("files") {
                 priority(100)
                 insertValue("someCustomInsertValue")
+              },
+              ShellCompletionSuggestion("figures")
+            )
+          }
+        }
+      }
+      subcommand("insert-value-no-escape") {
+        argument {
+          suggestions {
+            listOf(
+              ShellCompletionSuggestion("files") {
+                priority(100)
+                insertValue("files '{cursor}'")
               },
               ShellCompletionSuggestion("figures")
             )
@@ -195,6 +209,23 @@ internal class TerminalCompletionInsertionTest : BasePlatformTestCase() {
     fixture.assertOutputModelState(expectedText, expectedCursorOffset)
   }
 
+  @Test
+  fun `test insert value is inserted unescaped`() = doTest { fixture ->
+    fixture.type("test_cmd insert-value-no-escape fi")
+    fixture.callCompletionPopup()
+    val lookup = fixture.getActiveLookup() ?: error("No active lookup")
+    assertThat(lookup.items.map { it.lookupString })
+      .hasSameElementsAs(listOf("figures", "files"))
+    assertThat(lookup.currentItem?.lookupString)
+      .isEqualTo("files")
+
+    fixture.insertSelectedItem()
+
+    val expectedText = "test_cmd insert-value-no-escape files ''"
+    val expectedCursorOffset = TerminalOffset.of(expectedText.length.toLong() - 1)
+    fixture.assertOutputModelState(expectedText, expectedCursorOffset)
+  }
+
   private suspend fun TerminalCompletionFixture.assertOutputModelState(
     expectedText: String,
     expectedCursorOffset: TerminalOffset,
@@ -222,7 +253,9 @@ internal class TerminalCompletionInsertionTest : BasePlatformTestCase() {
       val startupOptions = TerminalStartupOptionsImpl(
         shellCommand = if (isPowerShell) listOf("powershell.exe") else listOf("/bin/zsh", "--login", "-i"),
         workingDirectory = "fakeDir",
-        envVariables = emptyMap()
+        envVariables = emptyMap(),
+        processType = TerminalProcessType.SHELL,
+        pid = null,
       )
       val session = EchoingTerminalSession(startupOptions, fixtureScope.childScope("EchoingTerminalSession"))
       doWithCompletionFixture(project, session, fixtureScope) { fixture ->

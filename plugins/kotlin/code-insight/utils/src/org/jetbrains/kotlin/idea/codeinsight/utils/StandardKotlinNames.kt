@@ -22,6 +22,12 @@ object StandardKotlinNames {
     object Boolean {
         @JvmField val not: FqName = (BUILT_INS_PACKAGE_FQ_NAME + "Boolean") + "not"
     }
+
+    object Lazy {
+        @JvmField val lazyClassId: ClassId = ClassId(BUILT_INS_PACKAGE_FQ_NAME, Name.identifier("Lazy"))
+        @JvmField val lazyValue: CallableId = CallableId(lazyClassId, Name.identifier("value"))
+    }
+
     object Collections {
         @JvmField val asSequence: FqName = BASE_COLLECTIONS_PACKAGE + "asSequence"
         @JvmField val filter: FqName = BASE_COLLECTIONS_PACKAGE + "filter"
@@ -38,6 +44,9 @@ object StandardKotlinNames {
         @JvmField val mapOf: FqName = BASE_COLLECTIONS_PACKAGE + "mapOf"
         @JvmField val setOf: FqName = BASE_COLLECTIONS_PACKAGE + "setOf"
 
+        @JvmField val plusAssign: CallableId = CallableId(BASE_COLLECTIONS_PACKAGE, Name.identifier("plusAssign"))
+        @JvmField val minusAssign: CallableId = CallableId(BASE_COLLECTIONS_PACKAGE, Name.identifier("minusAssign"))
+
         @JvmField val transformations: List<FqName> =
             collectionTransformationFunctionNames.map { BASE_COLLECTIONS_PACKAGE + it }
 
@@ -49,6 +58,8 @@ object StandardKotlinNames {
             }
             pkg + it
         }
+
+        @JvmField val IndexedValue: ClassId = ClassId.topLevel(FqName("kotlin.collections.IndexedValue"))
     }
 
     object Enum {
@@ -63,6 +74,11 @@ object StandardKotlinNames {
 
     object Jvm {
         @JvmField val JvmInline: FqName = JvmStandardClassIds.BASE_JVM_PACKAGE + "JvmInline"
+    }
+
+    object Duration {
+        private val DURATION_COMPANION_CLASS_ID = ClassId(KOTLIN_TIME_PACKAGE, Name.identifier("Duration.Companion"))
+        @JvmField val milliseconds: CallableId = CallableId(DURATION_COMPANION_CLASS_ID, Name.identifier("milliseconds"))
     }
 
     object Sequences {
@@ -94,6 +110,10 @@ object StandardKotlinNames {
         @JvmField val emitAll: CallableId = CallableId(BASE_FLOW_PACKAGE, Name.identifier("emitAll"))
     }
 
+    object For {
+        @JvmField val forEachName: Name = Name.identifier("forEach")
+    }
+
     object BuildScope {
         @JvmField val buildList: CallableId = CallableId(BASE_COLLECTIONS_PACKAGE, Name.identifier("buildList"))
         @JvmField val buildSet: CallableId = CallableId(BASE_COLLECTIONS_PACKAGE, Name.identifier("buildSet"))
@@ -123,12 +143,18 @@ object StandardKotlinNames {
         @JvmField val putAll: CallableId = CallableId(mutableMapClassId, Name.identifier("putAll"))
     }
 
+    @JvmField val Pair: ClassId = ClassId.topLevel(FqName("kotlin.Pair"))
+    @JvmField val Triple: ClassId = ClassId.topLevel(FqName("kotlin.Triple"))
+
     @JvmField val also: FqName = BUILT_INS_PACKAGE_FQ_NAME + "also"
+    @JvmField val apply: FqName = BUILT_INS_PACKAGE_FQ_NAME + "apply"
     @JvmField val lazy: FqName = BUILT_INS_PACKAGE_FQ_NAME + "lazy"
     @JvmField val let: FqName = BUILT_INS_PACKAGE_FQ_NAME + "let"
     @JvmField val run: FqName = BUILT_INS_PACKAGE_FQ_NAME + "run"
     @JvmField val takeIf: FqName = BUILT_INS_PACKAGE_FQ_NAME + "takeIf"
     @JvmField val takeUnless: FqName = BUILT_INS_PACKAGE_FQ_NAME + "takeUnless"
+
+    @JvmField val context: FqName = BUILT_INS_PACKAGE_FQ_NAME + "context"
 
     private val collectionTransformationFunctionNames = listOf(
         "chunked",

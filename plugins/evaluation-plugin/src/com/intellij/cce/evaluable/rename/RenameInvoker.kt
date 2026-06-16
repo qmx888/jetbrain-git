@@ -17,7 +17,6 @@ import com.intellij.cce.evaluation.SuggestionsProvider
 import com.intellij.cce.interpreter.FeatureInvoker
 import com.intellij.codeInsight.lookup.LookupManager
 import com.intellij.codeInsight.lookup.impl.LookupImpl
-import com.intellij.completion.ml.actions.MLCompletionFeaturesUtil
 import com.intellij.openapi.actionSystem.ActionPlaces
 import com.intellij.openapi.actionSystem.ActionUiKind
 import com.intellij.openapi.actionSystem.AnActionEvent
@@ -60,11 +59,6 @@ class RenameInvoker(private val project: Project,
     var resultFeatures = Features.EMPTY
     if (activeLookup != null) {
       val lookup = activeLookup as LookupImpl
-      val features = MLCompletionFeaturesUtil.getCommonFeatures(lookup)
-      resultFeatures = Features(
-        CommonFeatures(features.context, features.user, features.session),
-        lookup.items.map { MLCompletionFeaturesUtil.getElementFeatures(lookup, it).features }
-      )
       suggestions = lookup.items.map { it.asSuggestion() }
     }
     val latency = System.currentTimeMillis() - start
@@ -103,9 +97,9 @@ class RenameInvoker(private val project: Project,
                    ?: throw IllegalStateException("Can't find suggestions provider \"${strategy.suggestionsProvider}\"")
 
     return if (provider is ContextAwareSuggestionsProvider) {
-      provider.getSuggestions(expectedLine, editor, lang, this::comparator, strategy.collectContextOnly)
+      provider.getSuggestions(project, expectedLine, editor, lang, this::comparator, strategy.collectContextOnly)
     } else {
-      provider.getSuggestions(expectedLine, editor, lang, this::comparator)
+      provider.getSuggestions(project, expectedLine, editor, lang, this::comparator)
     }
   }
 

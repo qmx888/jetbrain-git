@@ -6,7 +6,9 @@ import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonElement
+import org.jetbrains.annotations.ApiStatus
 
+@ApiStatus.Internal
 @Serializable
 sealed class RpcMessage {
   companion object {
@@ -21,11 +23,13 @@ sealed class RpcMessage {
 
   @Serializable
   @SerialName("call")
-  data class CallRequest(val requestId: UID,
-                         val service: InstanceId,
-                         val method: String,
-                         val args: Map<String, JsonElement>,
-                         val meta: Map<String, JsonElement> = emptyMap()) : RpcMessage() {
+  data class CallRequest(
+    val requestId: UID,
+    val service: InstanceId,
+    val method: String,
+    val args: Map<String, JsonElement>,
+    val meta: Map<String, JsonElement> = emptyMap()
+  ) : RpcMessage() {
     val displayName: String get() = "RPC call ${classMethodDisplayName()}[#${requestId}]"
 
     fun classMethodDisplayName(): String {
@@ -39,14 +43,18 @@ sealed class RpcMessage {
 
   @Serializable
   @SerialName("call_result")
-  data class CallResult(val requestId: UID,
-                        val result: JsonElement,
-                        val meta: Map<String, JsonElement> = emptyMap()) : RpcMessage()
+  data class CallResult(
+    val requestId: UID,
+    val result: JsonElement,
+    val meta: Map<String, JsonElement> = emptyMap()
+  ) : RpcMessage()
 
   @Serializable
   @SerialName("call_failure")
-  data class CallFailure(val requestId: UID,
-                         val error: FailureInfo) : RpcMessage()
+  data class CallFailure(
+    val requestId: UID,
+    val error: FailureInfo
+  ) : RpcMessage()
 
   @Serializable
   @SerialName("cancel_call")
@@ -54,8 +62,10 @@ sealed class RpcMessage {
 
   @Serializable
   @SerialName("stream_data")
-  data class StreamData(val streamId: UID,
-                        val data: JsonElement) : RpcMessage()
+  data class StreamData(
+    val streamId: UID,
+    val data: JsonElement
+  ) : RpcMessage()
 
   // optional message sent by a producer to a newly created stream
   //
@@ -65,7 +75,7 @@ sealed class RpcMessage {
   // when consumer receives StreamInit for a stream that is not registered as in-use, it can respond with StreamClose
   @Serializable
   @SerialName("stream_init")
-  data class StreamInit(val streamId: UID): RpcMessage()
+  data class StreamInit(val streamId: UID) : RpcMessage()
 
   /**
    * Producer should not send any data unless asked to. Consumer controls the moment and the quantity with this message.
@@ -73,12 +83,17 @@ sealed class RpcMessage {
    */
   @Serializable
   @SerialName("stream_next")
-  data class StreamNext(val streamId: UID, val count: Int) : RpcMessage()
+  data class StreamNext(
+    val streamId: UID,
+    val count: Int,
+  ) : RpcMessage()
 
   @Serializable
   @SerialName("stream_closed")
-  data class StreamClosed(val streamId: UID,
-                          val error: FailureInfo? = null) : RpcMessage()
+  data class StreamClosed(
+    val streamId: UID,
+    val error: FailureInfo? = null
+  ) : RpcMessage()
 
   @Serializable
   @SerialName("resource_consumed")

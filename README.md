@@ -132,6 +132,13 @@ Alternatively, follow the steps below in a terminal:
 These instructions will help you build Rebased from source code, which is based on the IntelliJ community edition.
 IntelliJ IDEA '**2023.2**' or newer is required.
 
+> [!IMPORTANT]
+>
+> IntelliJ IDEA project is currently being migrated to the [Bazel](https://bazel.build/) build system. 
+> The migration is still in progress, so you may encounter some rough edges or temporary issues along the way, mostly related to IDE integration.
+> * Building the project using only IDE built-in capabilities is not supported anymore, so make sure the [Bazel plugin](https://plugins.jetbrains.com/plugin/22977-bazel) is installed and enabled.
+> * Known issue: some tests are not yet possible to be run with Bazel. In case of any issues, please depend on the `tests.cmd` script mentioned in the [Running IntelliJ IDEA in CI/CD environment](#running-intellij-idea-in-cicd-environment) section.
+
 #### Opening the Rebased Source Code in the IDE
 Using the latest IntelliJ IDEA, click '**File | Open**', select the `<IDEA_HOME>` directory.
 If IntelliJ IDEA displays a message about a missing or out-of-date required plugin (e.g. Kotlin),
@@ -141,16 +148,16 @@ If IntelliJ IDEA displays a message about a missing or out-of-date required plug
 #### Build Configuration Steps
 1. **JDK Setup**
 
-- Use JetBrains Runtime 21 (without JCEF) to compile
+  - Use JetBrains Runtime 25 (without JCEF) to compile
   - IDE will prompt to download it on the first build
 > [!IMPORTANT]
 >
-> JetBrains Runtime **without** JCEF is required. If `jbr-21` SDK points to JCEF version, change it to the non-JCEF version:
+> JetBrains Runtime **without** JCEF is required. If `jbr-25` SDK points to JCEF version, change it to the non-JCEF version:
 > - Add `idea.is.internal=true` to `idea.properties` and restart the IDE.
 > - Go to '**Project Structure | SDKs**'
 > - Click 'Browse' → 'Download...'
-> - Select version 21 and vendor 'JetBrains Runtime'
-> - To confirm if the JDK is correct, navigate to the SDK page with jbr-21 selected. Search for `jcef`, it should **_NOT_** yield a result.
+> - Select version 25 and vendor 'JetBrains Runtime'
+> - To confirm if the JDK is correct, navigate to the SDK page with jbr-25 selected. Search for `jcef`, it should **_NOT_** yield a result.
 
 2. **Maven Configuration** : If the **Maven** plugin is disabled, [add the path variable](https://www.jetbrains.com/help/idea/absolute-path-variables.html) "**MAVEN_REPOSITORY**" pointing to `<USER_HOME>/.m2/repository` directory.
 

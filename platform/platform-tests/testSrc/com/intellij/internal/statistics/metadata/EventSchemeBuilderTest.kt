@@ -1,4 +1,4 @@
-// Copyright 2000-2022 JetBrains s.r.o. and contributors. Use of this source code is governed by the Apache 2.0 license.
+// Copyright 2000-2026 JetBrains s.r.o. and contributors. Use of this source code is governed by the Apache 2.0 license.
 package com.intellij.internal.statistics.metadata
 
 import com.intellij.internal.statistic.eventLog.EventLogGroup
@@ -13,14 +13,15 @@ import com.intellij.internal.statistic.eventLog.events.scheme.EventsSchemeBuilde
 import com.intellij.internal.statistic.eventLog.events.scheme.FieldDescriptor
 import com.intellij.internal.statistic.eventLog.events.scheme.GroupDescriptor
 import com.intellij.internal.statistic.eventLog.events.scheme.PluginSchemeDescriptor
-import com.intellij.internal.statistic.eventLog.validator.ValidationResultType
-import com.intellij.internal.statistic.eventLog.validator.rules.EventContext
 import com.intellij.internal.statistic.eventLog.validator.rules.beans.EventGroupContextData
 import com.intellij.internal.statistic.eventLog.validator.rules.impl.CustomValidationRule
 import com.intellij.internal.statistic.eventLog.validator.rules.impl.CustomValidationRuleFactory
 import com.intellij.internal.statistic.service.fus.collectors.CounterUsagesCollector
 import com.intellij.testFramework.fixtures.BasePlatformTestCase
+import com.jetbrains.fus.reporting.api.IEventContext
+import com.jetbrains.fus.reporting.api.ValidationResultType
 
+@Suppress("EventLogDescription")
 class EventSchemeBuilderTest : BasePlatformTestCase() {
   fun `test generate string field validated by regexp`() {
     doFieldTest(EventFields.StringValidatedByRegexpReference("count", "integer"), hashSetOf("{regexp#integer}"))
@@ -44,6 +45,62 @@ class EventSchemeBuilderTest : BasePlatformTestCase() {
 
   fun `test generate string field validated by list of possible values`() {
     doFieldTest(EventFields.String("class", listOf("foo", "bar")), hashSetOf("{enum:foo|bar}"))
+  }
+
+  fun `test generate string field with required true`() {
+    doFieldTest(
+      EventFields.String("status", listOf("open", "closed"), required = true),
+      hashSetOf("{enum:open|closed}", "{required:true}")
+    )
+  }
+
+  fun `test generate string field with required false`() {
+    doFieldTest(
+      EventFields.String("status", listOf("open", "closed"), required = false),
+      hashSetOf("{enum:open|closed}", "{required:false}")
+    )
+  }
+
+  fun `test generate string field with required unspecified`() {
+    doFieldTest(
+      EventFields.String("status", listOf("open", "closed"), required = null),
+      hashSetOf("{enum:open|closed}")
+    )
+  }
+
+  fun `test generate string field with default value`() {
+    doFieldTest(
+      EventFields.String("mode", listOf("auto", "manual"), defaultValue = "auto"),
+      hashSetOf("{enum:auto|manual}", "{default_value:auto}")
+    )
+  }
+
+  fun `test generate string field with explicitly removed default value`() {
+    doFieldTest(
+      EventFields.String("mode", listOf("auto", "manual"), defaultValue = ""),
+      hashSetOf("{enum:auto|manual}", "{default_value:}")
+    )
+  }
+
+  fun `test generate string field with no default value`() {
+    doFieldTest(
+      EventFields.String("mode", listOf("auto", "manual"), defaultValue = null),
+      hashSetOf("{enum:auto|manual}")
+    )
+  }
+
+  fun `test generate string field with required and default value`() {
+    doFieldTest(
+      EventFields.String("type", listOf("A", "B", "C"), required = true, defaultValue = "A"),
+      hashSetOf("{enum:A|B|C}", "{required:true}", "{default_value:A}")
+    )
+  }
+
+  fun `test generate string field with required false and empty default`() {
+    doFieldTest(
+      EventFields.String("type", listOf("A", "B", "C"), required = false, defaultValue = ""),
+      hashSetOf("{enum:A|B|C}", "{required:false}", "{default_value:}")
+    )
   }
 
   fun `test generate enum field`() {
@@ -86,6 +143,12 @@ class EventSchemeBuilderTest : BasePlatformTestCase() {
     assertTrue(descriptors.any { x -> x.plugin.id == "com.intellij" })
   }
 
+  fun `test system collector is not included when filtering by specific plugin id`() {
+    val descriptors = buildEventsScheme(recorder = "FUS", pluginId = "org.jetbrains.hexana")
+    assertFalse("System collector 'fus.event.log' should not be included when filtering by a specific plugin id",
+                descriptors.any { it.id == "fus.event.log" })
+  }
+
   fun `test generate fileName`() {
     val group = buildGroupDescription()
     assertEquals("EventSchemeBuilderTest.kt", group.fileName)
@@ -96,8 +159,8 @@ class EventSchemeBuilderTest : BasePlatformTestCase() {
    */
   fun `test generate registered descriptions`() {
     val groupDescription = "Test group description5"
-    val eventDescription = "Description of test event"
-    val fieldDescription = "Number of elements in event"
+    val eventDescription = "Description of the test event"
+    val fieldDescription = "Number of elements in the event"
     val eventLogGroup = EventLogGroup("test.group.id", 1, "FUS").apply {
       registerEvent("test_event", EventFields.Int("count", fieldDescription))
     }
@@ -197,6 +260,6 @@ class EventSchemeBuilderTest : BasePlatformTestCase() {
 
   class TestCustomValidationRule(private val ruleId: String) : CustomValidationRule() {
     override fun getRuleId(): String = ruleId
-    override fun doValidate(data: String, context: EventContext): ValidationResultType = ValidationResultType.ACCEPTED
+    override fun doValidate(data: String, context: IEventContext): ValidationResultType = ValidationResultType.ACCEPTED
   }
 }

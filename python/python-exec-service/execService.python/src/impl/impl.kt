@@ -15,13 +15,13 @@ import com.intellij.python.community.execService.ZeroCodeStdoutTransformerTyped
 import com.intellij.python.community.execService.impl.transformerToHandler
 import com.intellij.python.community.execService.python.advancedApi.ExecutablePython
 import com.intellij.python.community.execService.python.advancedApi.executePythonAdvanced
+import com.intellij.python.community.execService.python.getLanguageLevelFromVersionStringSafe
 import com.intellij.python.community.execService.python.impl.PyExecPythonBundle.message
 import com.jetbrains.python.PYTHON_VERSION_ARG
 import com.jetbrains.python.PythonInfo
 import com.jetbrains.python.Result
 import com.jetbrains.python.errorProcessing.PyResult
 import com.jetbrains.python.errorProcessing.getOr
-import com.jetbrains.python.sdk.flavors.PythonSdkFlavor.getLanguageLevelFromVersionStringStaticSafe
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.jetbrains.annotations.ApiStatus
@@ -41,8 +41,10 @@ internal suspend fun ExecService.validatePythonAndGetInfoImpl(python: Executable
     if (r.exitCode == 0) Result.success(r) else Result.failure(message("python.get.version.error", python.userReadableName, r.exitCode))
   }).getOr { return@withContext it }
   // Python 2 might return version as stderr, see https://bugs.python.org/issue18338
-  val versionString = versionOutput.stdoutString.let { it.ifBlank { versionOutput.stderrString } }
-  val languageLevel = getLanguageLevelFromVersionStringStaticSafe(versionString.trim())
+  val versionString = versionOutput.stdoutString.let { stdout ->
+    stdout.ifBlank { versionOutput.stderrString.lineSequence().lastOrNull { it.isNotBlank() } ?: "" }
+  }
+  val languageLevel = getLanguageLevelFromVersionStringSafe(versionString.trim())
   if (languageLevel == null) {
     return@withContext PyResult.localizedError(message("python.get.version.wrong.version", python.userReadableName, versionString))
   }

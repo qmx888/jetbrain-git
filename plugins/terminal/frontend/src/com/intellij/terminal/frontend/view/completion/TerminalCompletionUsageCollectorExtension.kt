@@ -94,7 +94,7 @@ internal class TerminalCompletionUsageDescriptor : LookupUsageDescriptor {
     result.add(LAST_SELECTED_ITEM_MATCHING_LENGTH with matchingLength)
 
     if (descriptor.finishType == LookupUsageTracker.FinishType.EXPLICIT
-        && canExecuteWithChosenItem(item.lookupString, typedPrefix)) {
+        && canExecuteWithChosenItem(item, typedPrefix)) {
       result.add(WAS_EXECUTED_FIELD with true)
     }
 
@@ -105,7 +105,7 @@ internal class TerminalCompletionUsageDescriptor : LookupUsageDescriptor {
     val service = TerminalCommandCompletionService.getInstance(descriptor.lookup.project)
     val context = service.activeProcess?.context ?: return emptyList()
     val commandText = context.commandText.trim()
-    val commandData = TerminalCommandUsageStatistics.getLoggableCommandData(commandText) ?: return emptyList()
+    val commandData = TerminalCommandUsageStatistics.getLoggableCommandData(commandText)
 
     val command = COMMAND_FIELD with commandData.command
     val subCommand = commandData.subCommand?.let { SUBCOMMAND_FIELD with it }

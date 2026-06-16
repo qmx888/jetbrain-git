@@ -1,4 +1,4 @@
-// Copyright 2000-2025 JetBrains s.r.o. and contributors. Use of this source code is governed by the Apache 2.0 license.
+// Copyright 2000-2026 JetBrains s.r.o. and contributors. Use of this source code is governed by the Apache 2.0 license.
 package org.jetbrains.idea.maven.utils
 
 import com.intellij.codeInsight.actions.ReformatCodeProcessor
@@ -18,12 +18,15 @@ import com.intellij.openapi.application.*
 import com.intellij.openapi.application.PathManager.getSystemDir
 import com.intellij.openapi.application.impl.ApplicationInfoImpl
 import com.intellij.openapi.application.impl.LaterInvocator
+import com.intellij.openapi.components.Service
+import com.intellij.openapi.components.service
 import com.intellij.openapi.externalSystem.ExternalSystemModulePropertyManager.Companion.getInstance
 import com.intellij.openapi.externalSystem.model.ProjectSystemId
 import com.intellij.openapi.externalSystem.service.execution.ExternalSystemJdkException
 import com.intellij.openapi.externalSystem.service.execution.ExternalSystemJdkUtil
 import com.intellij.openapi.externalSystem.service.execution.InvalidJavaHomeException
 import com.intellij.openapi.externalSystem.service.execution.InvalidSdkException
+import com.intellij.openapi.externalSystem.service.execution.getJavaHomeForEel
 import com.intellij.openapi.externalSystem.service.project.trusted.ExternalSystemTrustedProjectDialog
 import com.intellij.openapi.fileEditor.FileEditorManager
 import com.intellij.openapi.fileEditor.OpenFileDescriptor
@@ -32,6 +35,7 @@ import com.intellij.openapi.progress.ProcessCanceledException
 import com.intellij.openapi.progress.ProgressIndicator
 import com.intellij.openapi.progress.ProgressManager
 import com.intellij.openapi.progress.Task
+import com.intellij.openapi.progress.runBlockingCancellable
 import com.intellij.openapi.project.DumbService
 import com.intellij.openapi.project.DumbService.Companion.isDumbAware
 import com.intellij.openapi.project.Project
@@ -87,7 +91,6 @@ import org.jetbrains.idea.maven.utils.MavenArtifactUtil.readPluginInfo
 import org.jetbrains.idea.maven.utils.MavenEelUtil.resolveLocalRepositoryBlocking
 import org.jetbrains.idea.maven.utils.MavenEelUtil.resolveM2Dir
 import org.jetbrains.idea.maven.utils.MavenEelUtil.resolveUserSettingsPathBlocking
-import org.jetbrains.idea.maven.utils.MavenUtil.path
 import org.xml.sax.SAXException
 import org.xml.sax.SAXParseException
 import org.xml.sax.helpers.DefaultHandler
@@ -145,6 +148,7 @@ object MavenUtil {
   val SYSTEM_ID: ProjectSystemId = ProjectSystemId(MAVEN_NAME_UPCASE)
   const val MAVEN_NOTIFICATION_GROUP: String = MAVEN_NAME
   const val SETTINGS_XML: String = "settings.xml"
+  const val TOOLCHAINS_XML: String = "toolchains.xml"
   const val DOT_M2_DIR: String = ".m2"
   const val ENV_M2_HOME: String = "M2_HOME"
   const val M2_DIR: String = "m2"
@@ -377,20 +381,6 @@ object MavenUtil {
     return baseDir
   }
 
-  @JvmStatic
-  fun findProfilesXmlFile(pomFile: VirtualFile?): VirtualFile? {
-    if (pomFile == null) return null
-    val parent = pomFile.getParent()
-    if (parent == null || !parent.isValid()) return null
-    return parent.findChild(MavenConstants.PROFILES_XML)
-  }
-
-  fun getProfilesXmlNioFile(pomFile: VirtualFile?): Path? {
-    if (pomFile == null) return null
-    val parent = pomFile.getParent()
-    if (parent == null) return null
-    return parent.toNioPath().resolve(MavenConstants.PROFILES_XML)
-  }
 
   @JvmStatic
   fun <T, U> collectFirsts(pairs: List<Pair<T, U>>): List<T> {
@@ -428,12 +418,12 @@ object MavenUtil {
     return (if (collection is MutableSet<*>) collection else HashSet<T?>(collection))
   }
 
-  fun <T, U> mapToList(map: MutableMap<T?, U?>): MutableList<Pair<T?, U?>?> {
-    return ContainerUtil.map<MutableMap.MutableEntry<T?, U?>?, Pair<T?, U?>?>(map.entries,
-                                                                              Function { tuEntry: MutableMap.MutableEntry<T?, U?>? ->
-                                                                                Pair.create<T?, U?>(
-                                                                                  tuEntry!!.key, tuEntry.value)
-                                                                              })
+  fun <T, U> mapToList(map: Map<T?, U?>): List<Pair<T?, U?>?> {
+    return ContainerUtil.map<Map.Entry<T?, U?>?, Pair<T?, U?>?>(map.entries,
+                                                                               Function { tuEntry: Map.Entry<T?, U?>? ->
+                                                                                 Pair.create<T?, U?>(
+                                                                                   tuEntry!!.key, tuEntry.value)
+                                                                               })
   }
 
   @JvmStatic
@@ -964,6 +954,7 @@ object MavenUtil {
     return emptySet()
   }
 
+  @ApiStatus.ScheduledForRemoval
   @Deprecated("")
   @JvmStatic
   fun getMavenConfFile(mavenHome: File?): File {
@@ -975,6 +966,7 @@ object MavenUtil {
     return mavenHome.resolve(BIN_DIR).resolve(M2_CONF_FILE)
   }
 
+  @ApiStatus.ScheduledForRemoval
   @Deprecated("")
   @JvmStatic
   fun getMavenHomeFile(mavenHome: StaticResolvedMavenHomeType): File? {
@@ -1100,6 +1092,7 @@ object MavenUtil {
     return resolveLocalRepository(null, overriddenLocalRepository, overriddenMavenHome, overriddenUserSettingsFile).toFile()
   }
 
+  @ApiStatus.ScheduledForRemoval
   @Deprecated(
     """do not use this method, it mixes path to maven home and labels like "Use bundled maven" in overriddenMavenHome variable
   use {@link MavenUtil#resolveLocalRepository(String, StaticResolvedMavenHomeType, String) resolveLocalRepository(String, StaticResolvedMavenHomeType, String)}
@@ -1233,16 +1226,16 @@ object MavenUtil {
     return path
   }
 
-  internal suspend fun doResolveLocalRepository(userSettingsFile: Path?, globalSettingsFile: Path?): Path? {
+  internal suspend fun doResolveLocalRepository(userSettingsFile: Path?, globalSettingsFile: Path?, properties: Properties?): Path? {
     if (userSettingsFile != null) {
-      val fromUserSettings: String? = getRepositoryFromSettings(userSettingsFile)
+      val fromUserSettings: String? = getRepositoryFromSettings(userSettingsFile, properties)
       if (!StringUtil.isEmpty(fromUserSettings)) {
         return Path.of(fromUserSettings)
       }
     }
 
     if (globalSettingsFile != null) {
-      val fromGlobalSettings: String? = getRepositoryFromSettings(globalSettingsFile)
+      val fromGlobalSettings: String? = getRepositoryFromSettings(globalSettingsFile, properties)
       if (!StringUtil.isEmpty(fromGlobalSettings)) {
         return Path.of(fromGlobalSettings)
       }
@@ -1260,6 +1253,9 @@ object MavenUtil {
     }
     catch (e: IOException) {
       MavenLog.LOG.debug("Cannot read file $file", e)
+      return null
+    }catch (e: JDOMException) {
+      MavenLog.LOG.warn("Cannot read file $file", e)
       return null
     }
 
@@ -1351,8 +1347,39 @@ object MavenUtil {
   @Throws(IOException::class, JDOMException::class)
   private fun getDomRootElement(file: Path?): Element? {
     if (file == null) return null
-    val reader = InputStreamReader(Files.newInputStream(file), StandardCharsets.UTF_8)
-    return JDOMUtil.load(reader)
+    return MavenSettingsDomReader.getInstance().read(file)
+  }
+
+  @Service(Service.Level.APP)
+  private class MavenSettingsDomReader {
+    private val relay: DiskQueryRelay<Path, Element?> = DiskQueryRelay { file ->
+      Files.newInputStream(file).use { stream ->
+        JDOMUtil.load(InputStreamReader(stream, StandardCharsets.UTF_8))
+      }
+    }
+
+    @Throws(IOException::class, JDOMException::class)
+    fun read(file: Path): Element? {
+      try {
+        return relay.accessDiskWithCheckCanceled(file)
+      }
+      catch (e: RuntimeException) {
+        // accessDiskWithCheckCanceled propagates Future.get() failures via ExceptionUtil.rethrow,
+        // which wraps the ExecutionException in a RuntimeException. Restore the original cause
+        // so callers can match on IOException/JDOMException.
+        val cause = (e.cause as? ExecutionException)?.cause ?: throw e
+        ExceptionUtil.rethrowUnchecked(cause)
+        when (cause) {
+          is IOException -> throw cause
+          is JDOMException -> throw cause
+          else -> throw e
+        }
+      }
+    }
+
+    companion object {
+      fun getInstance(): MavenSettingsDomReader = service<MavenSettingsDomReader>()
+    }
   }
 
   private fun getElementWithRegardToNamespace(parent: Element?, childName: String?, namespaces: MutableList<String?>): Element? {
@@ -1852,25 +1879,44 @@ object MavenUtil {
       if (res != null && res.getSdkType() is JavaSdkType) {
         return res
       }
-      return JavaAwareProjectJdkTableImpl.getInstanceEx().getInternalJdk()
+      if (project.getEelDescriptor() != LocalEelDescriptor) {
+        return resolveJavaHomeSdk(project)
+      }
+      else {
+        return JavaAwareProjectJdkTableImpl.getInstanceEx().getInternalJdk()
+      }
     }
 
     if (name == MavenRunnerSettings.USE_JAVA_HOME) {
-      val javaHome = ExternalSystemJdkUtil.getJavaHome()
-      if (StringUtil.isEmptyOrSpaces(javaHome)) {
-        throw InvalidJavaHomeException(javaHome)
-      }
-      try {
-        return JavaSdk.getInstance().createJdk("", javaHome!!)
-      }
-      catch (e: IllegalArgumentException) {
-        throw InvalidJavaHomeException(javaHome)
-      }
+      return resolveJavaHomeSdk(project)
     }
 
     val projectJdk: Sdk? = getSdkByExactName(name)
     if (projectJdk != null) return projectJdk
     throw InvalidSdkException(name)
+  }
+
+  /**
+   * Resolves JAVA_HOME for the project's environment (local or remote via EEL).
+   */
+  private fun resolveJavaHome(project: Project): String? {
+    val eelDescriptor = project.getEelDescriptor()
+    return runBlockingCancellable {
+      getJavaHomeForEel(eelDescriptor)
+    }?.toString()
+  }
+
+  private fun resolveJavaHomeSdk(project: Project): Sdk {
+    val javaHome = resolveJavaHome(project)
+    if (javaHome.isNullOrBlank()) {
+      throw InvalidJavaHomeException(javaHome)
+    }
+    try {
+      return JavaSdk.getInstance().createJdk("", javaHome)
+    }
+    catch (_: IllegalArgumentException) {
+      throw InvalidJavaHomeException(javaHome)
+    }
   }
 
   private fun getSdkByExactName(name: String): Sdk? {
@@ -1999,6 +2045,22 @@ object MavenUtil {
       .filter { it.isNotBlank() }
     return schemaLocations.all {
       Maven4SchemaVersionChecker.is410Xsd(it)
+    }
+  }
+
+  /**
+   * MNG-7805: Since Maven 4.0.0-alpha-7, modelVersion is optional and inferred from namespace.
+   * @return inferred modelVersion from xmlns, or null if not inferrable
+   */
+  @JvmStatic
+  fun inferModelVersionFromNamespace(xmlns: String?): String? {
+    if (xmlns == null) return null
+    val prefix = "http://maven.apache.org/POM/"
+    val prefixHttps = "https://maven.apache.org/POM/"
+    return when {
+      xmlns.startsWith(prefix) -> xmlns.removePrefix(prefix)
+      xmlns.startsWith(prefixHttps) -> xmlns.removePrefix(prefixHttps)
+      else -> null
     }
   }
 }

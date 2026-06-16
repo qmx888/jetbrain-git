@@ -2,6 +2,7 @@
 package com.intellij.platform.debugger.impl.backend
 
 import com.intellij.execution.RunContentDescriptorIdImpl
+import com.intellij.execution.rpc.createProcessHandlerDto
 import com.intellij.ide.rpc.AnActionId
 import com.intellij.ide.rpc.rpcId
 import com.intellij.openapi.actionSystem.DefaultActionGroup
@@ -24,7 +25,6 @@ import com.intellij.platform.debugger.impl.rpc.XDebuggerSessionEvent
 import com.intellij.platform.debugger.impl.rpc.XFrontendDebuggerCapabilities
 import com.intellij.platform.debugger.impl.rpc.XSmartStepIntoHandlerDto
 import com.intellij.platform.debugger.impl.rpc.toRpc
-import com.intellij.platform.execution.impl.backend.createProcessHandlerDto
 import com.intellij.platform.project.ProjectId
 import com.intellij.platform.project.findProject
 import com.intellij.platform.project.findProjectOrNull
@@ -56,6 +56,7 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.buffer
 import kotlinx.coroutines.flow.channelFlow
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.future.asDeferred
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.jetbrains.annotations.ApiStatus
@@ -109,6 +110,8 @@ internal class BackendXDebuggerManagerApi : XDebuggerManagerApi {
       debugProcess.editorsProvider.toRpc(cs),
       initialSessionState,
       currentSession.suspendData(),
+      debugProcess.currentStateMessage,
+      debugProcess.currentStateMessageFlow?.toRpc(),
       currentSession.sessionName,
       currentSession.getSessionEventsFlow(initialSessionState).toRpc(),
       sessionDataDto,
@@ -124,6 +127,7 @@ internal class BackendXDebuggerManagerApi : XDebuggerManagerApi {
       leftToolbarActions,
       topToolbarActions,
       settingsActions,
+      processDescriptor = debugProcess.processDescriptor?.asDeferred(),
     )
   }
 
@@ -280,7 +284,7 @@ fun XDebugSessionImpl.getSessionEventsFlow(
 ): Flow<XDebuggerSessionEvent> = channelFlow {
   val currentSession = this@getSessionEventsFlow
   // Offload serialization from listener to background
-  val rawEvents = Channel<() -> XDebuggerSessionEvent>(Channel.UNLIMITED)
+  val rawEvents = Channel<suspend () -> XDebuggerSessionEvent>(Channel.UNLIMITED)
 
   val listener = object : XDebugSessionListener {
     override fun sessionPaused() {
@@ -321,7 +325,7 @@ fun XDebugSessionImpl.getSessionEventsFlow(
     }
 
     override fun settingsChanged() {
-      rawEvents.trySend { XDebuggerSessionEvent.SettingsChanged }
+      rawEvents.trySend { XDebuggerSessionEvent.SettingsChanged(currentSession.state()) }
     }
 
     override fun settingsChangedFromFrontend() {
@@ -361,4 +365,5 @@ private fun XDebugSessionImpl.state(): XDebugSessionState = XDebugSessionState(
   isStepOverActionAllowed = isStepOverActionAllowed,
   isStepOutActionAllowed = isStepOutActionAllowed,
   isRunToCursorActionAllowed = isRunToCursorActionAllowed,
+  isForceStepIntoActionAllowed = isForceStepIntoActionAllowed,
 )

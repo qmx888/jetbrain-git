@@ -3,7 +3,12 @@
 
 package com.intellij.java.workspace.entities
 
-import com.intellij.platform.workspace.storage.*
+import com.intellij.java.workspace.entities.impl.DirectoryCopyPackagingElementEntityImpl
+import com.intellij.platform.workspace.storage.EntitySource
+import com.intellij.platform.workspace.storage.EntityType
+import com.intellij.platform.workspace.storage.GeneratedCodeApiVersion
+import com.intellij.platform.workspace.storage.MutableEntityStorage
+import com.intellij.platform.workspace.storage.WorkspaceEntityBuilder
 import com.intellij.platform.workspace.storage.url.VirtualFileUrl
 
 @GeneratedCodeApiVersion(3)
@@ -17,6 +22,7 @@ interface DirectoryCopyPackagingElementEntityBuilder : WorkspaceEntityBuilder<Di
 internal object DirectoryCopyPackagingElementEntityType :
   EntityType<DirectoryCopyPackagingElementEntity, DirectoryCopyPackagingElementEntityBuilder>() {
   override val entityClass: Class<DirectoryCopyPackagingElementEntity> get() = DirectoryCopyPackagingElementEntity::class.java
+  override val entityImplBuilderClass: Class<*> get() = DirectoryCopyPackagingElementEntityImpl.Builder::class.java
   operator fun invoke(
     filePath: VirtualFileUrl,
     entitySource: EntitySource,

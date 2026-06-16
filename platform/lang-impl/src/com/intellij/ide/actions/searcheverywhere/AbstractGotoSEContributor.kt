@@ -23,11 +23,13 @@ import com.intellij.ide.util.scopeChooser.ScopeService
 import com.intellij.navigation.AnonymousElementProvider
 import com.intellij.navigation.NavigationItem
 import com.intellij.navigation.PsiElementNavigationItem
+import com.intellij.openapi.Disposable
 import com.intellij.openapi.actionSystem.AnAction
 import com.intellij.openapi.actionSystem.AnActionEvent
 import com.intellij.openapi.actionSystem.CommonDataKeys
 import com.intellij.openapi.actionSystem.DataContext
 import com.intellij.openapi.actionSystem.DataProvider
+import com.intellij.openapi.actionSystem.DataSink
 import com.intellij.openapi.actionSystem.impl.SimpleDataContext
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.application.ModalityState
@@ -52,6 +54,7 @@ import com.intellij.util.indexing.FindSymbolParameters
 import it.unimi.dsi.fastutil.ints.IntArrayList
 import org.jetbrains.annotations.ApiStatus
 import java.util.EnumSet
+import java.util.function.BiConsumer
 import java.util.regex.Pattern
 import javax.swing.ListCellRenderer
 
@@ -70,8 +73,7 @@ internal val patternToDetectAnonymousClasses: Pattern = Pattern.compile("([.\\w]
 abstract class AbstractGotoSEContributor @ApiStatus.Internal protected constructor(
   event: AnActionEvent,
   @ApiStatus.Internal val contributorModules: List<SearchEverywhereContributorModule>?
-)
-  : WeightedSearchEverywhereContributor<Any>, ScopeSupporting, SearchEverywhereExtendedInfoProvider {
+) : WeightedSearchEverywhereContributor<Any>, ScopeSupporting, SearchEverywhereExtendedInfoProvider, PossibleInternalCommandsContributor {
   @JvmField
   protected val myProject: Project = event.getRequiredData(CommonDataKeys.PROJECT)
   @JvmField
@@ -120,6 +122,7 @@ abstract class AbstractGotoSEContributor @ApiStatus.Internal protected construct
   protected val project: Project
     get() = myProject
 
+  @ApiStatus.Internal
   companion object {
     @JvmStatic
     fun createContext(project: Project?, psiContext: SmartPsiElementPointer<PsiElement?>?): DataContext {
@@ -170,6 +173,15 @@ abstract class AbstractGotoSEContributor @ApiStatus.Internal protected construct
       }
       return current
     }
+
+    @ApiStatus.Internal
+    fun createScopes(project: Project, psiContext: SmartPsiElementPointer<PsiElement?>?): List<ScopeDescriptor> {
+      @Suppress("DEPRECATION")
+      return project.getService(ScopeService::class.java)
+        .createModel(EnumSet.of(ScopeOption.LIBRARIES, ScopeOption.EMPTY_SCOPES))
+        .getScopesImmediately(createContext(project, psiContext))
+        .scopeDescriptors
+    }
   }
 
   @ApiStatus.Internal
@@ -189,11 +201,7 @@ abstract class AbstractGotoSEContributor @ApiStatus.Internal protected construct
   }
 
   protected open fun createScopes(): List<ScopeDescriptor> {
-    @Suppress("DEPRECATION")
-    return myProject.getService(ScopeService::class.java)
-      .createModel(EnumSet.of(ScopeOption.LIBRARIES, ScopeOption.EMPTY_SCOPES))
-      .getScopesImmediately(createContext(myProject, myPsiContext))
-      .scopeDescriptors
+    return createScopes(myProject, myPsiContext)
   }
 
   override fun getSearchProviderId(): String = javaClass.simpleName
@@ -280,25 +288,32 @@ abstract class AbstractGotoSEContributor @ApiStatus.Internal protected construct
   }
 
   private val fetchers =
-    (contributorModules?.map2Array<SearchEverywhereContributorModule, (String, ProgressIndicator, Processor<in FoundItemDescriptor<Any>>) -> Unit> {
-      { localPattern, localProgressIndicator, localConsumer -> it.perProductFetchWeightedElements(localPattern, localProgressIndicator, localConsumer) }
-    } ?: emptyArray()) + { localPattern, localProgressIndicator, localConsumer -> performByGotoContributorSearch(localPattern, localProgressIndicator, localConsumer) }
+    (contributorModules?.map2Array<SearchEverywhereContributorModule, (String, ProgressIndicator, Disposable?, Processor<in FoundItemDescriptor<Any>>) -> Unit> {
+      { localPattern, localProgressIndicator, _, localConsumer -> it.perProductFetchWeightedElements(localPattern, localProgressIndicator, localConsumer) }
+    } ?: emptyArray()) + { localPattern, localProgressIndicator, op, localConsumer -> performByGotoContributorSearch(localPattern, localProgressIndicator, op, localConsumer) }
 
   override fun fetchWeightedElements(
     pattern: String,
     progressIndicator: ProgressIndicator,
     consumer: Processor<in FoundItemDescriptor<Any>>,
   ) {
-    fetchWeightedElementsMixing(
-      pattern, progressIndicator, consumer,
-      // Ordering is important here
-      *fetchers
-    )
+    fetchers.forEach { fetcher -> fetcher(pattern, progressIndicator, null, consumer) }
+  }
+
+  @ApiStatus.Internal
+  override fun fetchWeightedElementsWithOperationDisposable(
+    pattern: String,
+    progressIndicator: ProgressIndicator,
+    operationDisposable: Disposable,
+    consumer: Processor<in FoundItemDescriptor<Any>>
+  ) {
+    fetchers.forEach { fetcher -> fetcher(pattern, progressIndicator, operationDisposable, consumer) }
   }
 
   private fun performByGotoContributorSearch(
     pattern: String,
     progressIndicator: ProgressIndicator,
+    operationDisposable: Disposable?,
     consumer: Processor<in FoundItemDescriptor<Any>>
   ) {
     if (!isEmptyPatternSupported && pattern.isEmpty()) {
@@ -310,7 +325,7 @@ abstract class AbstractGotoSEContributor @ApiStatus.Internal protected construct
         return@Runnable
       }
 
-      val model = createModel(myProject)
+      val model = createModelWithOperationDisposable(myProject, operationDisposable)
       if (progressIndicator.isCanceled) {
         return@Runnable
       }
@@ -332,25 +347,35 @@ abstract class AbstractGotoSEContributor @ApiStatus.Internal protected construct
         })
       }
 
+      val diagEmittedCount = java.util.concurrent.atomic.AtomicInteger(0)
       when (provider) {
         is ChooseByNameInScopeItemProvider -> {
           val parameters = FindSymbolParameters.wrap(pattern, scope)
           provider.filterElementsWithWeights(viewModel, parameters, progressIndicator
           ) { item: FoundItemDescriptor<*> ->
+            diagEmittedCount.incrementAndGet()
             processElement(progressIndicator, consumer, model, item.item, item.weight)
           }
         }
         is ChooseByNameWeightedItemProvider -> {
           provider.filterElementsWithWeights(viewModel, pattern, everywhere, progressIndicator
           ) { item: FoundItemDescriptor<*> ->
+            diagEmittedCount.incrementAndGet()
             processElement(progressIndicator, consumer, model, item.item, item.weight)
           }
         }
         else -> {
           provider.filterElements(viewModel, pattern, everywhere, progressIndicator) { element: Any ->
+            diagEmittedCount.incrementAndGet()
             processElement(progressIndicator, consumer, model, element, getElementPriority(element, pattern))
           }
         }
+      }
+      if (LOG.isDebugEnabled) {
+        LOG.debug(
+          "[symbol-se-diag] $searchProviderId finished: pattern='$pattern'," +
+          " scope='${scope.displayName}', everywhere=$everywhere, elementsFromModel=${diagEmittedCount.get()}"
+        )
       }
     }
 
@@ -359,13 +384,22 @@ abstract class AbstractGotoSEContributor @ApiStatus.Internal protected construct
       fetchRunnable.run()
     }
     else {
-      // IJPL-176529
-      if (ModalityState.defaultModalityState() == ModalityState.nonModal()) {
+      try {
+        // IJPL-176529
+        if (ModalityState.defaultModalityState() == ModalityState.nonModal()) {
+          @Suppress("UsagesOfObsoleteApi", "DEPRECATION")
+          ProgressIndicatorUtils.yieldToPendingWriteActions()
+        }
         @Suppress("UsagesOfObsoleteApi", "DEPRECATION")
-        ProgressIndicatorUtils.yieldToPendingWriteActions()
+        ProgressIndicatorUtils.runInReadActionWithWriteActionPriority(fetchRunnable, progressIndicator)
       }
-      @Suppress("UsagesOfObsoleteApi", "DEPRECATION")
-      ProgressIndicatorUtils.runInReadActionWithWriteActionPriority(fetchRunnable, progressIndicator)
+      catch (_: IllegalStateException) {
+        // Happens when danced around with coroutineToIndicator calls
+        if (progressIndicator.isCanceled) {
+          LOG.warn("Got cancelled while trying to start a progress; rethrowing a CancelledException")
+          progressIndicator.checkCanceled()
+        }
+      }
     }
   }
 
@@ -406,6 +440,15 @@ abstract class AbstractGotoSEContributor @ApiStatus.Internal protected construct
   override fun getSupportedScopes(): List<ScopeDescriptor> = createScopes()
 
   protected abstract fun createModel(project: Project): FilteringGotoByModel<*>
+
+  @ApiStatus.Internal
+  protected open fun createModelWithOperationDisposable(project: Project, operationDisposable: Disposable?): FilteringGotoByModel<*> {
+    val model = createModel(project)
+    if (operationDisposable != null && model is Disposable) {
+      Disposer.register(operationDisposable, model)
+    }
+    return model
+  }
 
   override fun filterControlSymbols(pattern: String): String {
     if (StringUtil.containsAnyChar(pattern, ":,;@[( #") ||
@@ -450,15 +493,15 @@ abstract class AbstractGotoSEContributor @ApiStatus.Internal protected construct
     return true
   }
 
-  override fun getDataForItem(element: Any, dataId: String): Any? {
-    if (CommonDataKeys.PSI_ELEMENT.`is`(dataId)) {
+  override fun getDataProviders(): List<BiConsumer<Any, DataSink>> = super.getDataProviders() + BiConsumer { element, sink ->
+    sink.lazy(CommonDataKeys.PSI_ELEMENT) {
       when (element) {
-        is PsiElement -> return element
-        is DataProvider -> return element.getData(dataId)
-        is PsiElementNavigationItem -> return element.targetElement
+        is PsiElement -> element
+        is DataProvider -> element.getData(CommonDataKeys.PSI_ELEMENT.name) as? PsiElement
+        is PsiElementNavigationItem -> element.targetElement
+        else -> null
       }
     }
-    return null
   }
 
   override fun getItemDescription(element: Any): String? {
@@ -475,6 +518,16 @@ abstract class AbstractGotoSEContributor @ApiStatus.Internal protected construct
 
   @Suppress("OVERRIDE_DEPRECATION")
   override fun getElementPriority(element: Any, searchPattern: String): Int = 50
+
+  @ApiStatus.Internal
+  override fun shouldTreatAsACommandQuery(string: String): Boolean {
+    return contributorModules?.any { it.shouldTreatAsACommandQuery(string) != false } ?: false
+  }
+
+  @ApiStatus.Internal
+  override fun shouldTreatAsACommandQueryWithArg(string: String): Boolean {
+    return contributorModules?.any { it.shouldTreatAsACommandQueryWithArg(string) != false } ?: false
+  }
 }
 
 private class MyViewModel(private val myProject: Project, private val myModel: ChooseByNameModel) : ChooseByNameViewModel {
@@ -508,4 +561,3 @@ private fun getSelectedScopes(project: Project): MutableMap<String, String?> {
   }
   return map
 }
-

@@ -36,6 +36,7 @@ import com.intellij.psi.util.endOffset
 import org.jetbrains.kotlin.analysis.api.KaExperimentalApi
 import org.jetbrains.kotlin.analysis.api.KaSession
 import org.jetbrains.kotlin.analysis.api.analyze
+import org.jetbrains.kotlin.analysis.api.components.containingSymbol
 import org.jetbrains.kotlin.analysis.api.components.resolveToCall
 import org.jetbrains.kotlin.analysis.api.resolution.KaFunctionCall
 import org.jetbrains.kotlin.analysis.api.resolution.KaImplicitReceiverValue
@@ -43,6 +44,8 @@ import org.jetbrains.kotlin.analysis.api.resolution.KaReceiverValue
 import org.jetbrains.kotlin.analysis.api.resolution.singleFunctionCallOrNull
 import org.jetbrains.kotlin.analysis.api.resolution.symbol
 import org.jetbrains.kotlin.analysis.api.signatures.KaVariableSignature
+import org.jetbrains.kotlin.analysis.api.symbols.KaClassKind
+import org.jetbrains.kotlin.analysis.api.symbols.KaClassSymbol
 import org.jetbrains.kotlin.analysis.api.symbols.KaConstructorSymbol
 import org.jetbrains.kotlin.analysis.api.symbols.KaContextParameterSymbol
 import org.jetbrains.kotlin.analysis.api.symbols.KaFunctionSymbol
@@ -60,6 +63,7 @@ import org.jetbrains.kotlin.idea.codeInsight.hints.SHOW_EXCLUDED_PARAMETERS
 import org.jetbrains.kotlin.idea.codeinsights.impl.base.ArgumentNameCommentInfo
 import org.jetbrains.kotlin.idea.codeinsights.impl.base.isExpectedArgumentNameComment
 import org.jetbrains.kotlin.idea.util.application.isUnitTestMode
+import org.jetbrains.kotlin.idea.util.realName
 import org.jetbrains.kotlin.name.Name
 import org.jetbrains.kotlin.psi.KtBlockExpression
 import org.jetbrains.kotlin.psi.KtCallElement
@@ -93,7 +97,6 @@ class KtParameterHintsProvider : AbstractKtInlayHintsProvider() {
     }
 
     context(session: KaSession)
-    @OptIn(KaExperimentalApi::class)
     private fun collectFromParameters(
         callElement: KtCallElement,
         sink: InlayTreeSink
@@ -172,13 +175,13 @@ class KtParameterHintsProvider : AbstractKtInlayHintsProvider() {
                     parameterSymbol to name
                 }
             } else {
-                valueParameters.map { it to it.name }
+                valueParameters.map { it to (it.realName ?: it.name) }
             }
         return valueParametersWithNames
     }
 
     @OptIn(KaExperimentalApi::class)
-    context(_: KaSession)
+    context(session: KaSession)
     private fun collectFromParameters(
         callElement: KtCallElement,
         functionCall: KaFunctionCall<*>,
@@ -190,15 +193,22 @@ class KtParameterHintsProvider : AbstractKtInlayHintsProvider() {
         val contextParameters = functionSymbol.contextParameters
         val contextArguments: List<KaReceiverValue> = functionCall.contextArguments
 
-        val contextParameterPairs =
-            contextParameters.zip(contextArguments).filter { !it.first.name.isSpecial }
+        val explicitArgumentNames =
+            callElement.valueArguments.mapNotNullTo(hashSetOf()) { it.getArgumentName()?.asName }
+
+        val implicitContextParameterPairs =
+            contextParameters.zip(contextArguments).filter {
+                val name = it.first.name
+                !name.isSpecial && name !in explicitArgumentNames
+            }
 
         sink.whenOptionEnabled(SHOW_CONTEXT_PARAMETERS.name) {
-            collectContextParameters(callElement, sink, contextMenuPayloads, contextParameterPairs, valueParametersWithNames)
+            collectContextParameters(callElement, sink, contextMenuPayloads, implicitContextParameterPairs, valueParametersWithNames)
         }
 
         val args: Map<KtExpression, KaVariableSignature<KaValueParameterSymbol>> = functionCall.valueArgumentMapping
         val referencedName = (callElement.calleeExpression as? KtNameReferenceExpression)?.getReferencedName()
+        val numberOfValueParametersWithNames = valueParametersWithNames.size
         for (indexedValue in valueParametersWithNames.withIndex()) {
             val (symbol, name) = indexedValue.value
             if (name == null) continue
@@ -214,6 +224,16 @@ class KtParameterHintsProvider : AbstractKtInlayHintsProvider() {
                 // it is possible to place named argument in a wrong position when there is some default value
                 // after which you have to name rest arguments and no reason to proceed further
                 if (argument.getArgumentName()?.asName != name) break
+                continue
+            }
+
+            // do not show parameter name for single annotation attribute
+            val containingSymbol = symbol.containingSymbol
+            if (
+                containingSymbol is KaConstructorSymbol &&
+                (containingSymbol.containingSymbol as? KaClassSymbol)?.classKind == KaClassKind.ANNOTATION_CLASS &&
+                numberOfValueParametersWithNames == 1
+            ) {
                 continue
             }
 
@@ -274,7 +294,7 @@ class KtParameterHintsProvider : AbstractKtInlayHintsProvider() {
                 expandedState = {
                     if (lambdaOnly){
                         text("(")
-                    } else {
+                    } else if (callElement.valueArgumentList?.trailingComma == null) {
                         addParametersSeparator(valueParametersWithNames)
                     }
 
@@ -341,9 +361,10 @@ class KtParameterHintsProvider : AbstractKtInlayHintsProvider() {
             }
             is KtClass, is KtTypeReference -> "this"
             else -> null
-        } ?: return
+        } ?: if (valueSymbol is KaContextParameterSymbol) "context" else return
 
         val targetPsi = when(valueSymbol) {
+            is KaContextParameterSymbol -> valueSymbol.psi ?: valueSymbol.containingSymbol?.psi
             is KaReceiverParameterSymbol -> {
                 val element = valueSymbol.owningCallableSymbol.psi
                 (element as? KtNamedFunction)?.receiverTypeReference ?: element
@@ -354,6 +375,7 @@ class KtParameterHintsProvider : AbstractKtInlayHintsProvider() {
         text(symbolPsi, targetPsi?.asNavigatablePsiLoad())
     }
 
+    context(session: KaSession)
     private fun KtValueArgument.isArgumentNamed(symbol: KaValueParameterSymbol): Boolean {
         // avoid cases like "`value =` value"
         val argumentText = this.text
@@ -367,7 +389,7 @@ class KtParameterHintsProvider : AbstractKtInlayHintsProvider() {
         while (sibling != null) {
             when(sibling) {
                 is PsiComment -> {
-                    val argumentNameCommentInfo = ArgumentNameCommentInfo(symbol)
+                    val argumentNameCommentInfo = ArgumentNameCommentInfo(symbol, session)
                     return sibling.isExpectedArgumentNameComment(argumentNameCommentInfo)
                 }
                 !is PsiWhiteSpace -> break
@@ -379,7 +401,7 @@ class KtParameterHintsProvider : AbstractKtInlayHintsProvider() {
     }
 
     private fun isSimilarName(parameterName: String, otherName: String?): Boolean =
-        if (otherName != null && parameterName.length > 1) {
+        if (otherName?.isNotEmpty() == true && parameterName.isNotEmpty()) {
             val lowercase = otherName.lowercase()
             val name = parameterName.lowercase()
             // avoid cases like "`type = Type(...)`" and "`value =` myValue"

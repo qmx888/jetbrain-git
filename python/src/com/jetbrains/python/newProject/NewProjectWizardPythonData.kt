@@ -13,8 +13,8 @@ import com.intellij.openapi.projectRoots.Sdk
 import com.intellij.platform.ide.progress.runWithModalProgressBlocking
 import com.intellij.ui.dsl.builder.Panel
 import com.jetbrains.python.PyBundle
+import com.jetbrains.python.sdk.runWithSdkConfigurationLock
 import com.jetbrains.python.PythonModuleTypeBase
-import com.jetbrains.python.errorProcessing.ErrorSink
 import com.jetbrains.python.errorProcessing.emit
 import com.jetbrains.python.newProjectWizard.projectPath.ProjectPathFlows
 import com.jetbrains.python.onFailure
@@ -23,7 +23,7 @@ import com.jetbrains.python.sdk.add.v2.PySdkCreator
 import com.jetbrains.python.sdk.add.v2.PythonSdkPanelBuilderAndSdkCreator
 import com.jetbrains.python.sdk.configurePythonSdk
 import com.jetbrains.python.sdk.moduleIfExists
-import com.jetbrains.python.util.ShowingMessageErrorSync
+import com.jetbrains.python.errorProcessing.ErrorSink
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.combine
@@ -84,7 +84,7 @@ class NewPythonProjectStep(parent: NewProjectWizardStep, val createPythonModuleS
 
   private var intellijModule: Module? = null
   private lateinit var pySdkCreator: PySdkCreator
-  private val errorSink: ErrorSink = ShowingMessageErrorSync
+  private val errorSink: ErrorSink = ErrorSink()
 
   private val projectPathFlows = ProjectPathFlows.create(
     pathProperty.toFlow().combine(nameProperty.toFlow()) { dirPath, projectName ->
@@ -127,10 +127,10 @@ class NewPythonProjectStep(parent: NewProjectWizardStep, val createPythonModuleS
       }
     }
 
-    runWithModalProgressBlocking(project, PyBundle.message("python.sdk.creating.python.sdk")) {
+    runWithSdkConfigurationLock(project) {
       val (sdk, _) = pySdkCreator.getSdk(moduleOrProject).getOr {
         errorSink.emit(it.error, project)
-        return@runWithModalProgressBlocking
+        return@runWithSdkConfigurationLock
       }
       pythonSdk = sdk
       moduleOrProject.moduleIfExists?.let { module ->

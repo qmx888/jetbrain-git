@@ -4,6 +4,7 @@ package com.intellij.codeInsight.actions;
 
 import com.intellij.CodeStyleBundle;
 import com.intellij.application.options.CodeStyle;
+import com.intellij.application.options.codeStyle.cache.CodeStyleCachingService;
 import com.intellij.codeInsight.CodeInsightBundle;
 import com.intellij.codeInsight.CodeInsightSettings;
 import com.intellij.formatting.KeptLineFeedsCollector;
@@ -16,6 +17,7 @@ import com.intellij.openapi.editor.Document;
 import com.intellij.openapi.editor.SelectionModel;
 import com.intellij.openapi.module.Module;
 import com.intellij.openapi.progress.ProcessCanceledException;
+import com.intellij.openapi.progress.ProgressManager;
 import com.intellij.openapi.project.Project;
 import com.intellij.openapi.ui.DialogWrapper;
 import com.intellij.openapi.ui.DoNotAskOption;
@@ -35,9 +37,12 @@ import com.intellij.psi.PsiDocumentManager;
 import com.intellij.psi.PsiFile;
 import com.intellij.psi.codeStyle.ChangedRangesInfo;
 import com.intellij.psi.codeStyle.CodeStyleManager;
+import com.intellij.psi.codeStyle.CodeStyleSettings;
 import com.intellij.psi.impl.source.codeStyle.CodeFormatterFacade;
 import com.intellij.psi.impl.source.codeStyle.CodeFormattingData;
+import com.intellij.util.ConcurrencyUtil;
 import com.intellij.util.IncorrectOperationException;
+import com.intellij.util.concurrency.Semaphore;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
@@ -46,6 +51,9 @@ import java.util.Collections;
 import java.util.Date;
 import java.util.List;
 import java.util.concurrent.FutureTask;
+import java.util.concurrent.atomic.AtomicReference;
+
+import static com.intellij.openapi.progress.util.ProgressIndicatorUtilsCore.checkCancelledEvenWithPCEDisabled;
 
 public class ReformatCodeProcessor extends AbstractLayoutCodeProcessor {
   private static final Logger LOG = CodeStyle.LOG;
@@ -129,7 +137,7 @@ public class ReformatCodeProcessor extends AbstractLayoutCodeProcessor {
   protected @NotNull FutureTask<Boolean> prepareTask(final @NotNull PsiFile psiFile, final boolean processChangedTextOnly)
     throws IncorrectOperationException
   {
-    Pair<PsiFile, Runnable> fileToFormatAndCommitActionIfNeed = ReadAction.compute(() -> {
+    Pair<PsiFile, Runnable> fileToFormatAndCommitActionIfNeed = ReadAction.computeBlocking(() -> {
       PsiFile psiFileValid = ensureValid(psiFile);
       if (psiFileValid != null) {
         PsiDocumentManager instance = PsiDocumentManager.getInstance(myProject);
@@ -156,18 +164,38 @@ public class ReformatCodeProcessor extends AbstractLayoutCodeProcessor {
     Ref<List<TextRange>> rangesForFormat = Ref.create();
     final Runnable commitAction = fileToFormatAndCommitActionIfNeed.second;
     if (commitAction == null) {
-      rangesForFormat.set(ReadAction.compute(() -> prepareRangesForFormat.compute()));
+      rangesForFormat.set(ReadAction.computeBlocking(() -> prepareRangesForFormat.compute()));
     }
 
     boolean doNotKeepLineBreaks = confirmSecondReformat(psiFile);
+
+    // Resolve file settings outside the WriteCommandAction. CodeStyleCachedValueProvider
+    // computes settings asynchronously when first requested from EDT/under a write
+    // action, so a cold lookup inside the FutureTask body would return stale defaults
+    // and skip .editorconfig modifiers.
+    AtomicReference<CodeStyleSettings> fileSettings = new AtomicReference<>(CodeStyle.getSettings(fileToProcess));
+    // If settings are already being computed asynchronously for `fileToProcess`, returned settings may be stale,
+    // so wait for possible concurrent computation to finish.
+    if (!ApplicationManager.getApplication().isDispatchThread()) {
+      Semaphore latch = new Semaphore();
+      latch.down();
+      CodeStyleCachingService.getInstance(myProject).scheduleWhenSettingsComputed(fileToProcess, () -> {
+        fileSettings.set(CodeStyle.getSettings(fileToProcess));
+        latch.up();
+      });
+      // With the current implementation of CodeStyleCachingService,
+      // there is a possible race where a scheduled callback is never called.
+      if (!awaitWithCheckCancelled(latch, 5000)) {
+        LOG.warn("Reformat code style settings computation timed out.");
+      }
+    }
     return new FutureTask<>(() -> {
       Ref<Boolean> result = new Ref<>();
-      final var fileSettings = CodeStyle.getSettings(fileToProcess);
       if (LOG.isDebugEnabled()) {
         //noinspection ObjectToString
-        LOG.debug("reformat " + fileToProcess.getName() + " uses " + fileSettings);
+        LOG.debug("reformat " + fileToProcess.getName() + " uses " + fileSettings.get());
       }
-      CodeStyle.runWithLocalSettings(myProject, fileSettings, (localSettings) -> {
+      CodeStyle.runWithLocalSettings(myProject, fileSettings.get(), (localSettings) -> {
         if (doNotKeepLineBreaks) {
           localSettings.getCommonSettings(fileToProcess.getLanguage()).KEEP_LINE_BREAKS = false;
         }
@@ -182,7 +210,7 @@ public class ReformatCodeProcessor extends AbstractLayoutCodeProcessor {
   }
 
   private static @NotNull List<TextRange> getChangedRangesToFormat(@NotNull PsiFile psiFile) {
-    ChangedRangesInfo ranges = ReadAction.compute(() -> VcsFacade.getInstance().getChangedRangesInfo(psiFile));
+    ChangedRangesInfo ranges = ReadAction.computeBlocking(() -> VcsFacade.getInstance().getChangedRangesInfo(psiFile));
     return ranges != null ? ranges.allChangedRanges : Collections.emptyList();
   }
 
@@ -191,8 +219,9 @@ public class ReformatCodeProcessor extends AbstractLayoutCodeProcessor {
   }
 
   private boolean confirmSecondReformat(@NotNull PsiFile file) {
-    boolean doNotKeepLineBreaks = ReadAction.compute(() -> isDoNotKeepLineBreaks(file));
+    boolean doNotKeepLineBreaks = ReadAction.computeBlocking(() -> isDoNotKeepLineBreaks(file));
     if (!doNotKeepLineBreaks || isSecondReformatDisabled()) return false;
+
     CodeInsightSettings settings = CodeInsightSettings.getInstance();
     if (!settings.ENABLE_SECOND_REFORMAT) {
       Ref<Boolean> ref = Ref.create(true);
@@ -315,5 +344,20 @@ public class ReformatCodeProcessor extends AbstractLayoutCodeProcessor {
 
   public static @NlsContexts.Command String getCommandName() {
     return CodeStyleBundle.message("process.reformat.code");
+  }
+
+  private static boolean awaitWithCheckCancelled(@NotNull Semaphore semaphore, long timeoutMs) {
+    final var indicator = ProgressManager.getInstance().getProgressIndicator();
+    var waitTimeLeft = timeoutMs;
+    while (true) {
+      if (semaphore.waitFor(ConcurrencyUtil.DEFAULT_TIMEOUT_MS)) {
+        return true;
+      }
+      checkCancelledEvenWithPCEDisabled(indicator);
+      waitTimeLeft -= ConcurrencyUtil.DEFAULT_TIMEOUT_MS;
+      if (waitTimeLeft <= 0) {
+        return false;
+      }
+    }
   }
 }

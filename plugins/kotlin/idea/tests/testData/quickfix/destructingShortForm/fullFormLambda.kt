@@ -1,6 +1,5 @@
 // "Convert to a full name-based destructuring form" "true"
 // COMPILER_ARGUMENTS: -Xname-based-destructuring=only-syntax
-// IGNORE_K1
 
 data class User(val name: String, val age: Int)
 
@@ -8,4 +7,4 @@ fun test(user: User) {
     user.let { (name, other<caret>Name) -> }
 }
 
-// FUS_K2_QUICKFIX_NAME: org.jetbrains.kotlin.idea.k2.codeinsight.inspections.ConvertNameBasedDestructuringShortFormToFullFix
+// FUS_K2_QUICKFIX_NAME: org.jetbrains.kotlin.idea.codeInsight.inspections.ConvertNameBasedDestructuringShortFormToFullFix

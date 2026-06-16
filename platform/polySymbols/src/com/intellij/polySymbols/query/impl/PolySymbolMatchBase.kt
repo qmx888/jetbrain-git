@@ -7,7 +7,7 @@ import com.intellij.openapi.project.Project
 import com.intellij.openapi.util.Ref
 import com.intellij.platform.backend.documentation.DocumentationTarget
 import com.intellij.platform.backend.navigation.NavigationTarget
-import com.intellij.polySymbols.PolySymbol
+import com.intellij.polySymbols.PolySymbol.HideFromCompletionProperty
 import com.intellij.polySymbols.PolySymbol.Priority
 import com.intellij.polySymbols.PolySymbolApiStatus
 import com.intellij.polySymbols.PolySymbolKind
@@ -21,7 +21,7 @@ import com.intellij.polySymbols.query.PolySymbolMatchCustomizerFactory
 import com.intellij.polySymbols.query.PolySymbolScope
 import com.intellij.polySymbols.refactoring.PolySymbolRenameTarget
 import com.intellij.polySymbols.search.PolySymbolSearchTarget
-import com.intellij.polySymbols.search.PsiSourcedPolySymbol
+import com.intellij.polySymbols.search.PsiLinkedPolySymbol
 import com.intellij.polySymbols.utils.coalesceApiStatus
 import com.intellij.psi.PsiElement
 import com.intellij.psi.createSmartPointer
@@ -112,7 +112,7 @@ internal open class PolySymbolMatchBase internal constructor(
 
 }
 
-private class PsiSourcedPolySymbolMatch(
+private class PsiLinkedPolySymbolMatch(
   matchedName: String,
   nameSegments: List<PolySymbolNameSegment>,
   kind: PolySymbolKind,
@@ -120,10 +120,10 @@ private class PsiSourcedPolySymbolMatch(
   explicitProximity: Int?,
   additionalProperties: Map<String, Any>,
 ) : PolySymbolMatchBase(matchedName, nameSegments, kind, explicitPriority, explicitProximity, additionalProperties),
-    PsiSourcedPolySymbolMatchMixin {
+    PsiLinkedPolySymbolMatchMixin {
 
-  override fun createPointer(): Pointer<PsiSourcedPolySymbolMatch> =
-    PolySymbolMatchPointer<PsiSourcedPolySymbolMatch>(this, ::PsiSourcedPolySymbolMatch)
+  override fun createPointer(): Pointer<PsiLinkedPolySymbolMatch> =
+    PolySymbolMatchPointer<PsiLinkedPolySymbolMatch>(this, ::PsiLinkedPolySymbolMatch)
 
 }
 
@@ -135,11 +135,11 @@ private fun create(
   explicitProximity: Int?,
   additionalProperties: Map<String, Any>,
 ): PolySymbolMatch {
-  val psiSourcedMixin =
-    nameSegments.all { it.start == it.end || (it.symbols.isNotEmpty() && it.symbols.any { symbol -> symbol is PsiSourcedPolySymbol }) }
-  return if (psiSourcedMixin) {
-    PsiSourcedPolySymbolMatch(matchedName, nameSegments, kind, explicitPriority,
-                              explicitProximity, additionalProperties)
+  val psiLinkedMixin =
+    nameSegments.all { it.start == it.end || (it.symbols.isNotEmpty() && it.symbols.any { symbol -> symbol is PsiLinkedPolySymbol }) }
+  return if (psiLinkedMixin) {
+    PsiLinkedPolySymbolMatch(matchedName, nameSegments, kind, explicitPriority,
+                             explicitProximity, additionalProperties)
   }
   else {
     PolySymbolMatchBase(matchedName, nameSegments, kind,
@@ -187,7 +187,7 @@ private interface PolySymbolMatchMixin : PolySymbolMatch {
 
   override fun <T : Any> get(property: PolySymbolProperty<T>): T? =
     property.tryCast(additionalProperties[property.name])
-    ?: if (property != PolySymbol.PROP_HIDE_FROM_COMPLETION)
+    ?: if (property != HideFromCompletionProperty)
       reversedSegments().flatMap { it.symbols }.mapNotNull { it[property] }.firstOrNull()
     else null
 
@@ -237,15 +237,15 @@ private interface PolySymbolMatchMixin : PolySymbolMatch {
 
 }
 
-private interface PsiSourcedPolySymbolMatchMixin : PolySymbolMatchMixin, PsiSourcedPolySymbol {
+private interface PsiLinkedPolySymbolMatchMixin : PolySymbolMatchMixin, PsiLinkedPolySymbol {
 
   override val psiContext: PsiElement?
     get() = reversedSegments().flatMap { it.symbols.asSequence() }
       .mapNotNull { it.psiContext }.firstOrNull()
 
-  override val source: PsiElement?
+  override val linkedElement: PsiElement?
     get() = reversedSegments().flatMap { it.symbols }
-      .mapNotNull { (it as? PsiSourcedPolySymbol)?.source }.singleOrNull()
+      .mapNotNull { (it as? PsiLinkedPolySymbol)?.linkedElement }.singleOrNull()
 
   override fun getNavigationTargets(project: Project): Collection<NavigationTarget> =
     super<PolySymbolMatchMixin>.getNavigationTargets(project)

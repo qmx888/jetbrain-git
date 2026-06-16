@@ -1,7 +1,6 @@
 // Copyright 2000-2024 JetBrains s.r.o. and contributors. Use of this source code is governed by the Apache 2.0 license.
 package com.jetbrains.python.console;
 
-import com.intellij.openapi.application.ApplicationManager;
 import com.intellij.openapi.diagnostic.Logger;
 import com.intellij.openapi.project.Project;
 import com.intellij.openapi.util.Pair;
@@ -27,6 +26,7 @@ import java.io.OutputStream;
 import java.nio.charset.Charset;
 import java.util.List;
 
+@ApiStatus.Internal
 public class PythonDebugConsoleCommunication<T extends XDebugProcess & PyDebugProcessWithConsole> extends AbstractConsoleCommunication {
   private static final Logger LOG = Logger.getInstance(PythonDebugConsoleCommunication.class);
   private final T myDebugProcess;
@@ -34,6 +34,10 @@ public class PythonDebugConsoleCommunication<T extends XDebugProcess & PyDebugPr
   private boolean firstExecution = true;
   private final @NotNull PythonConsoleView myConsoleView;
   private boolean isExecuting = false;
+  // Set true after stdin is written. Cleared by the next "input ended" notification:
+  //  - pydevd path -> via notifyInputReceived() (see PyDebugProcess.consoleInputRequested(false))
+  //  - DAP path    -> via notifyInputRequested() (DAP collapses started=true/false into one event)
+  private volatile boolean inputRecentlyConsumed = false;
 
   @ApiStatus.Internal
   public PythonDebugConsoleCommunication(@NotNull Project project,
@@ -84,8 +88,7 @@ public class PythonDebugConsoleCommunication<T extends XDebugProcess & PyDebugPr
       public void ok(String value) {
         callback.ok(parseExecResponseString(value));
         if (PyConsoleUtil.isCommandQueueEnabled(myProject)) {
-          ApplicationManager.getApplication()
-            .getService(CommandQueueForPythonConsoleService.class)
+          myProject.getService(CommandQueueForPythonConsoleService.class)
             .removeCommand(PythonDebugConsoleCommunication.this, false);
         }
       }
@@ -94,8 +97,7 @@ public class PythonDebugConsoleCommunication<T extends XDebugProcess & PyDebugPr
       public void error(PyDebuggerException exception) {
         callback.error(exception);
         if (PyConsoleUtil.isCommandQueueEnabled(myProject)) {
-          ApplicationManager.getApplication()
-            .getService(CommandQueueForPythonConsoleService.class)
+          myProject.getService(CommandQueueForPythonConsoleService.class)
             .removeCommand(PythonDebugConsoleCommunication.this, true);
         }
       }
@@ -106,7 +108,10 @@ public class PythonDebugConsoleCommunication<T extends XDebugProcess & PyDebugPr
   public void execInterpreter(ConsoleCodeFragment code, final Function<InterpreterResponse, Object> callback) {
     isExecuting = true;
     if (waitingForInput) {
-      final OutputStream processInput = myDebugProcess.getProcessHandler().getProcessInput();
+      OutputStream processInput = myDebugProcess.getDebugConsoleInputStream();
+      if (processInput == null) {
+        processInput = myDebugProcess.getProcessHandler().getProcessInput();
+      }
       if (processInput != null) {
         try {
           final Charset defaultCharset = EncodingProjectManager.getInstance(myProject).getDefaultCharset();
@@ -121,6 +126,7 @@ public class PythonDebugConsoleCommunication<T extends XDebugProcess & PyDebugPr
       myNeedsMore = false;
       isExecuting = false;
       waitingForInput = false;
+      inputRecentlyConsumed = true;
       notifyCommandExecuted(waitingForInput);
     }
     else {
@@ -148,8 +154,23 @@ public class PythonDebugConsoleCommunication<T extends XDebugProcess & PyDebugPr
 
   @Override
   public void notifyInputRequested() {
+    if (inputRecentlyConsumed) {
+      // DAP path: "input ended" notification arrives here too because the JSON
+      // factory does not carry the started flag. Swallow exactly one such notification.
+      inputRecentlyConsumed = false;
+      return;
+    }
     waitingForInput = true;
     super.notifyInputRequested();
+  }
+
+  @Override
+  public void notifyInputReceived() {
+    // pydevd routes the "input ended" notification here (not through notifyInputRequested),
+    // so this is where the one-shot flag set in execInterpreter must be cleared.
+    // Without this, subsequent input() calls in the pydevd path are filtered out and stall.
+    inputRecentlyConsumed = false;
+    super.notifyInputReceived();
   }
 
   @Override

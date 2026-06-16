@@ -1,8 +1,10 @@
 // Copyright 2000-2025 JetBrains s.r.o. and contributors. Use of this source code is governed by the Apache 2.0 license.
 package com.intellij.platform.debugger.impl.rpc
 
+import com.intellij.execution.ExecutionEnvironmentIdImpl
 import com.intellij.execution.RunContentDescriptorIdImpl
 import com.intellij.execution.rpc.ExecutionEnvironmentProxyDto
+import com.intellij.execution.ui.RunContentDescriptor
 import com.intellij.ide.ui.icons.IconId
 import com.intellij.platform.rpc.Id
 import com.intellij.platform.rpc.RemoteApiProviderService
@@ -31,6 +33,8 @@ interface XDebugSessionTabApi : RemoteApi<Unit> {
 
   suspend fun additionalTabEvents(tabComponentsManagerId: XDebugSessionAdditionalTabComponentManagerId): Flow<XDebuggerSessionAdditionalTabEvent>
   suspend fun tabLayouterEvents(tabLayouterId: XDebugTabLayouterId): Flow<XDebugTabLayouterEvent>
+
+  suspend fun updateTabSelection(tabLayouterId: XDebugTabLayouterId, contentUniqueId: Int, isSelected: Boolean)
 
   companion object {
     @JvmStatic
@@ -75,13 +79,14 @@ data class XDebuggerSessionTabInfo(
   val forceNewDebuggerUi: Boolean,
   val withFramesCustomization: Boolean,
   val defaultFramesViewKey: String?,
-  val executionEnvironmentId: ExecutionEnvironmentId?,
+  val executionEnvironmentId: ExecutionEnvironmentIdImpl?,
   val executionEnvironmentProxyDto: ExecutionEnvironmentProxyDto?,
   val additionalTabsComponentManagerId: XDebugSessionAdditionalTabComponentManagerId,
   @Serializable(with = SendChannelSerializer::class) val tabClosedCallback: SendChannel<Unit>,
   @Serializable(with = DeferredSerializer::class) val backendRunContendDescriptorId: Deferred<RunContentDescriptorIdImpl>,
   @Serializable(with = DeferredSerializer::class) val showTab: Deferred<Unit>,
   @Serializable(with = DeferredSerializer::class) val tabLayouterDto: Deferred<XDebugTabLayouterDto>,
+  @Transient val contentToReuse: RunContentDescriptor? = null,
 ) : XDebuggerSessionTabAbstractInfo
 
 @ApiStatus.Internal
@@ -90,10 +95,6 @@ data class XDebugTabLayouterDto(
   val id: XDebugTabLayouterId,
   @Transient val localLayouter: XDebugTabLayouter? = null,
 )
-
-@ApiStatus.Internal
-@Serializable
-data class ExecutionEnvironmentId(override val uid: UID) : Id
 
 @ApiStatus.Internal
 @Serializable

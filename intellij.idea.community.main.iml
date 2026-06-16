@@ -30,7 +30,7 @@
     <orderEntry type="module" module-name="intellij.platform.vcs.impl.lang" scope="RUNTIME" />
     <orderEntry type="module" module-name="intellij.platform.vcs.impl.lang.actions" scope="RUNTIME" />
     <orderEntry type="module" module-name="intellij.idea.community.customization" scope="RUNTIME" />
-    <orderEntry type="module" module-name="intellij.vcs.git" scope="RUNTIME" />
+    <orderEntry type="module" module-name="intellij.vcs.git.backend" scope="RUNTIME" />
     <orderEntry type="module" module-name="intellij.vcs.git.shared" scope="RUNTIME" />
     <orderEntry type="module" module-name="intellij.vcs.git.frontend" scope="RUNTIME" />
     <orderEntry type="module" module-name="intellij.platform.images" scope="RUNTIME" />
@@ -38,22 +38,12 @@
     <orderEntry type="module" module-name="intellij.terminal" scope="RUNTIME" />
     <orderEntry type="module" module-name="intellij.terminal.frontend" scope="RUNTIME" />
     <orderEntry type="module" module-name="intellij.terminal.backend" scope="RUNTIME" />
-    <orderEntry type="module" module-name="intellij.platform.images.build" scope="TEST" />
     <orderEntry type="module" module-name="intellij.terminal.sh" scope="RUNTIME" />
-    <orderEntry type="module" module-name="intellij.textmate.plugin" scope="TEST" />
-    <orderEntry type="module" module-name="intellij.textmate.backend" scope="TEST" />
     <orderEntry type="module" module-name="intellij.emojipicker" scope="RUNTIME" />
-    <orderEntry type="module" module-name="intellij.commander" scope="TEST" />
     <orderEntry type="module" module-name="intellij.smart.update" scope="RUNTIME" />
     <orderEntry type="module" module-name="intellij.execution.process.elevation" scope="RUNTIME" />
     <orderEntry type="module" module-name="intellij.vcs.gitlab" scope="RUNTIME" />
     <orderEntry type="module" module-name="intellij.vcs.github.tracker" scope="RUNTIME" />
     <orderEntry type="module" module-name="intellij.vcs.git.commit.modal" scope="RUNTIME" />
-    <orderEntry type="module" module-name="intellij.vcs.git.terminal" scope="TEST" />
-    <orderEntry type="module" module-name="intellij.platform.instanceContainer.tests" scope="TEST" />
-    <orderEntry type="module" module-name="intellij.agent.workbench.chat" scope="TEST" />
-    <orderEntry type="module" module-name="intellij.agent.workbench.plugin" scope="TEST" />
-    <orderEntry type="module" module-name="intellij.agent.workbench.sessions" scope="TEST" />
-    <orderEntry type="module" module-name="intellij.platform.polySymbols.tests" scope="TEST" />
   </component>
 </module>

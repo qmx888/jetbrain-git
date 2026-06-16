@@ -30,6 +30,7 @@ import com.intellij.openapi.externalSystem.util.ExternalSystemTelemetryUtil;
 import com.intellij.openapi.progress.ProgressManager;
 import com.intellij.openapi.util.Key;
 import com.intellij.openapi.util.Pair;
+import com.intellij.openapi.util.Ref;
 import com.intellij.openapi.util.io.CanonicalPathPrefixTree;
 import com.intellij.openapi.util.io.FileUtil;
 import com.intellij.openapi.util.io.NioPathUtil;
@@ -49,7 +50,6 @@ import org.gradle.tooling.GradleConnector;
 import org.gradle.tooling.ProjectConnection;
 import org.gradle.tooling.model.ProjectModel;
 import org.gradle.tooling.model.build.BuildEnvironment;
-import org.gradle.tooling.model.dsl.GradleDslBaseScriptModel;
 import org.gradle.tooling.model.idea.IdeaModule;
 import org.gradle.tooling.model.idea.IdeaProject;
 import org.jetbrains.annotations.ApiStatus;
@@ -103,6 +103,8 @@ import java.util.function.Predicate;
 import java.util.function.Supplier;
 import java.util.stream.Stream;
 
+import static com.intellij.gradle.toolingExtension.GradleToolingExtensionProperties.USE_RESILIENT_MODEL_FETCH_SYSTEM_PROPERTY_KEY;
+import static com.intellij.gradle.toolingExtension.util.GradleVersionSpecificsUtil.isResilientModelFetchApiSupported;
 import static com.intellij.openapi.externalSystem.util.ExternalSystemApiUtil.find;
 import static com.intellij.openapi.externalSystem.util.ExternalSystemApiUtil.findAll;
 import static com.intellij.openapi.externalSystem.util.ExternalSystemApiUtil.findAllRecursively;
@@ -286,8 +288,8 @@ public final class GradleProjectResolver implements ExternalSystemProjectResolve
       }
     }
 
-    var mainInitScriptPath = GradleInitScriptUtil.createMainInitScript(resolverContext.isBuildSrcProject(), toolingExtensionClasses);
-    executionSettings.withArguments(GradleConstants.INIT_SCRIPT_CMD_OPTION, mainInitScriptPath.toString());
+    var mainInitScript = GradleInitScriptUtil.createMainInitScript(resolverContext.isBuildSrcProject(), toolingExtensionClasses);
+    executionSettings.addInitScript(resolverContext.getGradleVersion(), mainInitScript);
 
     if (!executionSettings.isDownloadSources()) {
       var ideaPluginConfiguratorInitScriptPath = GradleInitScriptUtil.createIdeaPluginConfiguratorInitScript();
@@ -317,12 +319,6 @@ public final class GradleProjectResolver implements ExternalSystemProjectResolve
       .spanBuilder("GradleCall")
       .startSpan();
     try (Scope ignore = gradleCallSpan.makeCurrent()) {
-      if (GradleVersionUtil.isGradleAtLeast(resolverContext.getGradleVersion(), "9.2")) {
-        var scriptModel = GradleExecutionHelper.getModel(connection, resolverContext, GradleDslBaseScriptModel.class);
-        models.addRootModel(GradleDslBaseScriptModel.class, scriptModel);
-        GradleSyncProjectConfigurator.runScriptBasePhase(resolverContext);
-      }
-
       var modelFetchActionResultHandler = GradleSyncProjectConfigurator.createModelFetchResultHandler(resolverContext);
       GradleModelFetchActionRunner.runAndTraceBuildAction(connection, resolverContext, buildAction, modelFetchActionResultHandler);
     }
@@ -482,7 +478,7 @@ public final class GradleProjectResolver implements ExternalSystemProjectResolve
     }
     resolverContext.putUserData(GRADLE_HOME_DIR, gradleHomeDir);
 
-    ExternalSystemTelemetryUtil.runWithSpan(GradleConstants.SYSTEM_ID, "PopulateModules", __ -> {
+    ExternalSystemTelemetryUtil.runWithSpan(GradleConstants.SYSTEM_ID, "PopulateModules", _ -> {
       for (final Pair<DataNode<ModuleData>, IdeaModule> pair : moduleMap.values()) {
         final DataNode<ModuleData> moduleDataNode = pair.first;
         final IdeaModule ideaModule = pair.second;
@@ -561,7 +557,7 @@ public final class GradleProjectResolver implements ExternalSystemProjectResolve
           index.buildClasspathNodesMap().get(Path.of(participant.getRootPath()).getParent());
 
         @NotNull Map<String, DataNode<? extends ModuleData>> buildSrcModules = new HashMap<>();
-        AtomicReference<DataNode<? extends ModuleData>> buildSrcModuleNode = new AtomicReference<>();
+        @NotNull Ref<DataNode<? extends ModuleData>> buildSrcModuleNodeRef = new Ref<>();
 
         findAll(projectDataNode, ProjectKeys.MODULE).stream()
           .filter(node -> buildSrcProjectPaths.contains(node.getData().getLinkedExternalProjectPath()))
@@ -573,18 +569,19 @@ public final class GradleProjectResolver implements ExternalSystemProjectResolve
 
             if (participant.getRootPath().equals(node.getData().getLinkedExternalProjectPath())) {
               if (ctx.isResolveModulePerSourceSet()) {
-                buildSrcModuleNode.set(findChild(node, GradleSourceSetData.KEY,
-                                                 sourceSetNode -> sourceSetNode.getData().getExternalName().endsWith(":main")));
+                buildSrcModuleNodeRef.set(findChild(node, GradleSourceSetData.KEY, sourceSetNode ->
+                  sourceSetNode.getData().getExternalName().endsWith(":main")));
               }
               else {
-                buildSrcModuleNode.set(node);
+                buildSrcModuleNodeRef.set(node);
               }
             }
           });
 
-        GradleBuildSrcProjectsResolver.addBuildSrcToBuildScriptClasspathData(buildClasspathNodes,
-                                                                             buildSrcModules,
-                                                                             buildSrcModuleNode.get());
+        DataNode<? extends ModuleData> buildSrcModuleNode = buildSrcModuleNodeRef.get();
+        if (buildSrcModuleNode != null) {
+          GradleBuildSrcProjectsResolver.addBuildSrcToBuildScriptClasspathData(buildClasspathNodes, buildSrcModules, buildSrcModuleNode);
+        }
       }
     }
   }
@@ -598,7 +595,11 @@ public final class GradleProjectResolver implements ExternalSystemProjectResolve
     if (resolverContext.isResolveModulePerSourceSet()) {
       executionSettings.withArgument("-Didea.resolveSourceSetDependencies=true");
     }
-    if (executionSettings.isParallelModelFetch()) {
+    boolean parallelModelFetch = executionSettings.isParallelModelFetch();
+    if (!parallelModelFetch) {
+      executionSettings.withArgument("-Dorg.gradle.tooling.parallel.ignore-legacy-default=true");
+    }
+    if (parallelModelFetch || GradleVersionUtil.isGradleAtLeast(resolverContext.getGradleVersion(), "9.4")) {
       executionSettings.withArgument("-Didea.parallelModelFetch.enabled=true");
     }
     if (!resolverContext.isBuildSrcProject()) {
@@ -608,6 +609,9 @@ public final class GradleProjectResolver implements ExternalSystemProjectResolve
     }
     if (Registry.is("gradle.daemon.legacy.dependency.resolver", false)) {
       executionSettings.withArgument("-Didea.gradle.daemon.legacy.dependency.resolver=true");
+    }
+    if (Registry.is("gradle.use.resilient.model.fetch") && isResilientModelFetchApiSupported(resolverContext.getGradleVersion())) {
+      executionSettings.withVmOption("-D" + USE_RESILIENT_MODEL_FETCH_SYSTEM_PROPERTY_KEY + "=true");
     }
 
     GradleImportCustomizer importCustomizer = GradleImportCustomizer.get();
@@ -936,8 +940,8 @@ public final class GradleProjectResolver implements ExternalSystemProjectResolve
     @Nullable DefaultProjectResolverContext resolverContext
   ) {
     Predicate<GradleProjectResolverExtension> extensionsFilter =
-      resolverContext == null ? __ -> true :
-      resolverContext.getPolicy() == null ? __ -> true :
+      resolverContext == null ? _ -> true :
+      resolverContext.getPolicy() == null ? _ -> true :
       resolverContext.getPolicy().getExtensionsFilter();
     Stream<GradleProjectResolverExtension> extensions = GradleProjectResolverUtil.createProjectResolvers(resolverContext)
       .filter(extensionsFilter.or(BaseResolverExtension.class::isInstance));

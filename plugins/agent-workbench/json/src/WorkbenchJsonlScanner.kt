@@ -3,11 +3,16 @@
 
 package com.intellij.agent.workbench.json
 
-import com.fasterxml.jackson.core.JsonFactory
-import com.fasterxml.jackson.core.JsonParser
-import com.fasterxml.jackson.core.JsonToken
+import tools.jackson.core.JsonParser
+import tools.jackson.core.JsonToken
+import tools.jackson.core.json.JsonFactory
+import java.io.BufferedReader
+import java.io.InputStreamReader
+import java.nio.channels.Channels
+import java.nio.channels.FileChannel
 import java.nio.file.Files
 import java.nio.file.Path
+import java.nio.file.StandardOpenOption
 
 object WorkbenchJsonlScanner {
   fun <S> scanJsonObjects(
@@ -36,6 +41,73 @@ object WorkbenchJsonlScanner {
     return fallbackState
   }
 
+  fun <S> scanTailLines(
+    path: Path,
+    jsonFactory: JsonFactory,
+    tailBytes: Long = 16_384L,
+    newState: () -> S,
+    onObject: (JsonParser, S) -> Boolean,
+  ): S {
+    val state = newState()
+    try {
+      FileChannel.open(path, StandardOpenOption.READ).use { channel ->
+        val fileSize = channel.size()
+        val seekPos = maxOf(0L, fileSize - tailBytes)
+        channel.position(seekPos)
+        val reader = BufferedReader(InputStreamReader(Channels.newInputStream(channel), Charsets.UTF_8))
+        // If we seeked mid-file, skip the first partial line.
+        if (seekPos > 0) {
+          reader.readLine()
+        }
+        while (true) {
+          val line = reader.readLine() ?: break
+          val trimmed = line.trim()
+          if (trimmed.isEmpty()) continue
+          val shouldContinue = parseLineObject(trimmed, jsonFactory, state, onObject) ?: continue
+          if (!shouldContinue) break
+        }
+      }
+    }
+    catch (_: Exception) {
+      // Tail scan is best-effort; return whatever state we collected.
+    }
+    return state
+  }
+
+  /**
+   * Removes lines from a JSONL file where [shouldRemove] returns `true`.
+   * Deletes the file entirely if no lines remain after removal.
+   *
+   * @param shouldRemove receives a [JsonParser] positioned at `START_OBJECT`; return `true` to remove the line
+   */
+  fun removeLines(
+    path: Path,
+    jsonFactory: JsonFactory,
+    shouldRemove: (JsonParser) -> Boolean,
+  ) {
+    if (!Files.exists(path)) return
+    val lines = Files.readAllLines(path)
+    val remaining = lines.filter { line ->
+      val trimmed = line.trim()
+      if (trimmed.isEmpty()) return@filter false
+      val remove = try {
+        jsonFactory.createJsonParser(trimmed).use { parser ->
+          parser.nextToken() == JsonToken.START_OBJECT && shouldRemove(parser)
+        }
+      }
+      catch (_: Throwable) {
+        false
+      }
+      !remove
+    }
+    if (remaining.isEmpty()) {
+      Files.deleteIfExists(path)
+    }
+    else {
+      Files.writeString(path, remaining.joinToString("\n", postfix = "\n"))
+    }
+  }
+
   private fun <S> parseWithSingleParser(
     path: Path,
     jsonFactory: JsonFactory,
@@ -44,7 +116,7 @@ object WorkbenchJsonlScanner {
     onObject: (JsonParser, S) -> Boolean,
   ) {
     Files.newBufferedReader(path).use { reader ->
-      jsonFactory.createParser(reader).use { parser ->
+      jsonFactory.createJsonParser(reader).use { parser ->
         var parsedObjects = 0
         while (parsedObjects < maxObjects) {
           val token = parser.nextToken() ?: return
@@ -96,7 +168,7 @@ object WorkbenchJsonlScanner {
     onObject: (JsonParser, S) -> Boolean,
   ): Boolean? {
     return try {
-      jsonFactory.createParser(line).use { parser ->
+      jsonFactory.createJsonParser(line).use { parser ->
         if (parser.nextToken() != JsonToken.START_OBJECT) {
           return null
         }

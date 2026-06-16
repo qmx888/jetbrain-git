@@ -34,6 +34,7 @@ import org.jetbrains.kotlin.analysis.api.resolution.successfulVariableAccessCall
 import org.jetbrains.kotlin.analysis.api.resolution.symbol
 import org.jetbrains.kotlin.analysis.api.types.KaType
 import org.jetbrains.kotlin.analysis.api.types.KaTypeParameterType
+import org.jetbrains.kotlin.idea.base.codeInsight.KotlinOptimizeImportsFacility
 import org.jetbrains.kotlin.idea.base.projectStructure.RootKindFilter
 import org.jetbrains.kotlin.idea.base.projectStructure.matches
 import org.jetbrains.kotlin.idea.refactoring.memberInfo.KtPsiClassWrapper
@@ -56,6 +57,7 @@ import org.jetbrains.kotlin.psi.KtElement
 import org.jetbrains.kotlin.psi.KtExpression
 import org.jetbrains.kotlin.psi.KtFile
 import org.jetbrains.kotlin.psi.KtFunctionLiteral
+import org.jetbrains.kotlin.psi.KtImportDirective
 import org.jetbrains.kotlin.psi.KtLabeledExpression
 import org.jetbrains.kotlin.psi.KtLambdaExpression
 import org.jetbrains.kotlin.psi.KtModifierListOwner
@@ -86,6 +88,7 @@ import org.jetbrains.kotlin.psi.psiUtil.parentsWithSelf
 import org.jetbrains.kotlin.psi.psiUtil.quoteIfNeeded
 import org.jetbrains.kotlin.psi.psiUtil.siblings
 import org.jetbrains.kotlin.psi.unpackFunctionLiteral
+import org.jetbrains.kotlin.utils.addToStdlib.firstIsInstanceOrNull
 import java.util.Collections
 import kotlin.math.min
 
@@ -270,8 +273,8 @@ fun <ListType : KtElement> replaceListPsiAndKeepDelimiters(
     return originalList
 }
 
-context(_: KaSession)
 @ApiStatus.Internal
+context(_: KaSession)
 fun KtCallExpression.canMoveLambdaOutsideParentheses(
     skipComplexCalls: Boolean = true
 ): Boolean {
@@ -412,7 +415,16 @@ fun PsiElement.getExtractionContainers(strict: Boolean = true, includeAll: Boole
 
     return when (enclosingDeclaration) {
         is KtFile -> Collections.singletonList(enclosingDeclaration)
-        is KtScript -> Collections.singletonList(enclosingDeclaration)
+        is KtScript -> {
+            /**
+             * [KtScript] element is essentially a class, so it should always have
+             * a single child, which is a [KtBlockExpression]. Inserting an element as an immediate child
+             * of the [KtScript] element is a mistake.
+             */
+            Collections.singletonList(
+                enclosingDeclaration.children.firstIsInstanceOrNull<KtBlockExpression>() ?: enclosingDeclaration
+            )
+        }
         is KtClassBody -> getAllExtractionContainers(strict).filterIsInstance<KtClassBody>()
         else -> {
             val targetContainer = when (enclosingDeclaration) {
@@ -500,4 +512,20 @@ fun PsiElement.removeOverrideModifier() {
             }?.delete()
         }
     }
+}
+
+/**
+ * Computes [block] and removes any possible redundant imports that would be added during this operation, not touching any existing
+ * redundant imports.
+ */
+fun <T> modifyPsiWithOptimizedImports(file: KtFile, block: () -> T): T {
+    fun unusedImports(): Set<KtImportDirective> =
+        KotlinOptimizeImportsFacility.getInstance().analyzeImports(file)?.unusedImports?.toSet().orEmpty()
+
+    val unusedImportsBefore = unusedImports()
+    val result = block()
+    val afterUnusedImports = unusedImports()
+    val importsToRemove = afterUnusedImports - unusedImportsBefore
+    importsToRemove.forEach(PsiElement::delete)
+    return result
 }

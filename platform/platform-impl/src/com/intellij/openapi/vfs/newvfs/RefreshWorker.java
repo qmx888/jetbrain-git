@@ -1,4 +1,4 @@
-// Copyright 2000-2025 JetBrains s.r.o. and contributors. Use of this source code is governed by the Apache 2.0 license.
+// Copyright 2000-2026 JetBrains s.r.o. and contributors. Use of this source code is governed by the Apache 2.0 license.
 package com.intellij.openapi.vfs.newvfs;
 
 import com.intellij.openapi.application.ApplicationManager;
@@ -37,15 +37,23 @@ import com.intellij.openapi.vfs.newvfs.persistent.BatchingFileSystem;
 import com.intellij.openapi.vfs.newvfs.persistent.FSRecordsImpl;
 import com.intellij.openapi.vfs.newvfs.persistent.PersistentFS;
 import com.intellij.openapi.vfs.newvfs.persistent.PersistentFSImpl;
+import com.intellij.platform.backend.workspace.WorkspaceModel;
+import com.intellij.platform.workspace.storage.impl.url.VirtualFileUrlManagerImpl;
 import com.intellij.util.MathUtil;
 import com.intellij.util.SmartList;
 import com.intellij.util.TimeoutUtil;
+import com.intellij.util.ThreeState;
+import com.intellij.util.concurrency.AppScheduledExecutorService;
 import com.intellij.util.concurrency.Semaphore;
 import com.intellij.util.containers.ContainerUtil;
 import com.intellij.util.containers.Stack;
+import com.intellij.util.containers.TreeNodeProcessingResult;
+import com.intellij.util.io.URLUtil;
 import com.intellij.workspaceModel.core.fileIndex.WorkspaceFileIndex;
 import com.intellij.workspaceModel.core.fileIndex.WorkspaceFileSet;
 import com.intellij.workspaceModel.core.fileIndex.WorkspaceFileSetWithCustomData;
+import com.intellij.workspaceModel.core.fileIndex.impl.WorkspaceFileIndexEx;
+import com.intellij.workspaceModel.ide.VirtualFileUrlManagerUtil;
 import it.unimi.dsi.fastutil.objects.ObjectOpenCustomHashSet;
 import kotlinx.coroutines.Dispatchers;
 import kotlinx.coroutines.ExecutorsKt;
@@ -58,6 +66,7 @@ import java.nio.file.FileVisitResult;
 import java.nio.file.FileVisitor;
 import java.nio.file.Files;
 import java.nio.file.InvalidPathException;
+import java.nio.file.LinkOption;
 import java.nio.file.Path;
 import java.nio.file.SimpleFileVisitor;
 import java.nio.file.attribute.BasicFileAttributes;
@@ -65,6 +74,8 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
 import java.util.HashSet;
+import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -92,8 +103,13 @@ final class RefreshWorker {
     1, Runtime.getRuntime().availableProcessors()
   );
 
-  private static final Executor executor = ExecutorsKt.asExecutor(
-    Dispatchers.getIO().limitedParallelism(PARALLELISM, "RefreshWorkerDispatcher")
+  private static final Executor rawExecutor = ExecutorsKt.asExecutor(
+      Dispatchers.getIO().limitedParallelism(PARALLELISM, "RefreshWorkerDispatcher")
+  );
+
+  /** Wraps {@link #rawExecutor} to propagate IntelliJ thread context to worker threads. */
+  private static final Executor executor = command -> rawExecutor.execute(
+    AppScheduledExecutorService.capturePropagationAndCancellationContext(command)
   );
 
   private static final Object REQUESTOR = VFileEvent.REFRESH_REQUESTOR;
@@ -197,7 +213,7 @@ final class RefreshWorker {
     }
   }
 
-  private void processQueue(List<VFileEvent> events) throws RefreshCancelledException {
+  private void processQueue(/*OutParam*/ List<VFileEvent> events) throws RefreshCancelledException {
     nextDir:
     while (!semaphore.isUp()) {
       var file = refreshQueue.poll();
@@ -207,6 +223,16 @@ final class RefreshWorker {
       }
 
       var fs = file.getFileSystem();
+
+      if (fs instanceof AsyncableFileSystem afs) {
+        //can't refresh file that has async ops still in flight => flush them:
+        try {
+          afs.fsync(file);
+        }
+        catch (IOException e) {
+          continue;
+        }
+      }
 
       try {
         if (roots.contains(file)) {
@@ -264,7 +290,7 @@ final class RefreshWorker {
 
   private boolean fullDirRefresh(List<VFileEvent> events, NewVirtualFileSystem fs, VirtualDirectoryImpl dir) {
     var t = System.nanoTime();
-    Pair<VirtualFile[], List<String>> snapshot = ReadAction.compute(() -> {
+    Pair<VirtualFile[], List<String>> snapshot = ReadAction.computeBlocking(() -> {
       VirtualFile[] children = dir.getChildren();
       return new Pair<>(children, getNames(children));
     });
@@ -352,7 +378,7 @@ final class RefreshWorker {
 
   private boolean isDirectoryChanged(VirtualDirectoryImpl dir, VirtualFile[] children, List<String> names) {
     var t = System.nanoTime();
-    var changed = ReadAction.compute(() -> {
+    var changed = ReadAction.computeBlocking(() -> {
       VirtualFile[] currentChildren = dir.getChildren();
       return !Arrays.equals(children, currentChildren) || !names.equals(getNames(currentChildren));
     });
@@ -362,7 +388,7 @@ final class RefreshWorker {
 
   private boolean partialDirRefresh(List<VFileEvent> events, NewVirtualFileSystem fs, VirtualDirectoryImpl dir) {
     var t = System.nanoTime();
-    Pair<List<VirtualFile>, List<String>> snapshot = ReadAction.compute(
+    Pair<List<VirtualFile>, List<String>> snapshot = ReadAction.computeBlocking(
       () -> new Pair<>(dir.getCachedChildren(), dir.getSuspiciousNames())
     );
     vfsTime.addAndGet(System.nanoTime() - t);
@@ -431,7 +457,7 @@ final class RefreshWorker {
 
   private boolean isDirectoryChanged(VirtualDirectoryImpl dir, List<VirtualFile> cached, List<String> wanted) {
     var t = System.nanoTime();
-    var changed = ReadAction.compute(() -> !cached.equals(dir.getCachedChildren()) || !wanted.equals(dir.getSuspiciousNames()));
+    var changed = ReadAction.computeBlocking(() -> !cached.equals(dir.getCachedChildren()) || !wanted.equals(dir.getSuspiciousNames()));
     vfsTime.addAndGet(System.nanoTime() - t);
     return changed;
   }
@@ -501,7 +527,7 @@ final class RefreshWorker {
     String symlinkTarget = attributes.isSymLink() ? fs.resolveSymLink(child) : null;
     ioTime.addAndGet(System.nanoTime() - t);
     int nameId = vfsPeer.getNameId(name);
-    return new ChildInfoImpl(nameId, attributes, isEmptyDir ? ChildInfo.EMPTY_ARRAY : null, symlinkTarget);
+    return new ChildInfoImpl(nameId, attributes, isEmptyDir ? ChildInfo.EMPTY_ARRAY : null, symlinkTarget, isEmptyDir);
   }
 
   private void generateDeleteEvents(List<VFileEvent> events,
@@ -587,17 +613,17 @@ final class RefreshWorker {
       LOG.trace("create parent=" + parent + " name=" + childName + " attr=" + attributes);
     }
 
-    ChildInfo[] children = null;
+    ScannedChildren scannedChildren = null;
     if (attributes.isDirectory() && !attributes.isSymLink() && parent.getFileSystem() instanceof LocalFileSystem) {
       try {
-        Path childPath = getChildPath(parent.getPath(), childName);
+        var childPath = getChildPath(parent.getPath(), childName);
         if (childPath != null && shouldScanDirectory(parent, childPath, childName)) {
-          List<Path> relevantExcluded = ContainerUtil.mapNotNull(ProjectManagerEx.getInstanceEx().getAllExcludedUrls(), url -> {
-            Path path = Path.of(VirtualFileManager.extractPath(url));
+          var relevantExcluded = ContainerUtil.mapNotNull(ProjectManagerEx.getInstanceEx().getAllExcludedUrls(null), url -> {
+            var path = Path.of(VirtualFileManager.extractPath(url));
             return path.startsWith(childPath) ? path : null;
           });
           var t = System.nanoTime();
-          children = scanChildren(childPath, relevantExcluded, parent);
+          scannedChildren = scanChildren(childPath, relevantExcluded, parent);
           ioTime.addAndGet(System.nanoTime() - t);
         }
       }
@@ -606,7 +632,9 @@ final class RefreshWorker {
       }
     }
 
-    events.add(new VFileCreateEvent(REQUESTOR, parent, childName, attributes.isDirectory(), attributes, symlinkTarget, children));
+    ChildInfo[] children = scannedChildren == null ? null : scannedChildren.children();
+    boolean childrenComplete = scannedChildren != null && scannedChildren.childrenComplete();
+    events.add(new VFileCreateEvent(REQUESTOR, parent, childName, attributes.isDirectory(), attributes, symlinkTarget, children, childrenComplete));
 
     VFileEvent caseSensitivityChangingEvent = ((PersistentFSImpl)persistentFS).determineCaseSensitivityAndPrepareUpdate(parent, childName);
     if (caseSensitivityChangingEvent != null) {
@@ -627,7 +655,7 @@ final class RefreshWorker {
   private static boolean shouldScanDirectory(VirtualFile parent, Path child, String childName) {
     if (FileTypeManager.getInstance().isFileIgnored(childName)) return false;
     for (Project openProject : ProjectManager.getInstance().getOpenProjects()) {
-      if (ReadAction.compute(() -> {
+      if (ReadAction.computeBlocking(() -> {
         List<WorkspaceFileSet> indexableFileSet = WorkspaceFileIndex.getInstance(openProject)
           .findFileSets(parent, true, true, /*includeContentNonIndexableSets*/ false, true, true, /*includeExternalNonIndexableSets*/ false, true);
         return ContainerUtil.exists(indexableFileSet, set -> set instanceof WorkspaceFileSetWithCustomData && ((WorkspaceFileSetWithCustomData<?>)set).getRecursive());
@@ -635,17 +663,71 @@ final class RefreshWorker {
         return true;
       }
     }
-    return false;
+    return isInContent(child) || !contentRootsUnderExcluded(child).isEmpty();
   }
 
-  // scan all children of "root" (except excluded dirs) recursively and return them in the ChildInfo[] array
+  private static boolean isInContent(Path directoryOrFile) {
+    String url = toUrl(directoryOrFile);
+    var openProjects = ProjectManager.getInstance().getOpenProjects();
+    return ContainerUtil.exists(openProjects, project -> ReadAction.computeBlocking(
+      () -> WorkspaceFileIndexEx.getInstance(project).isUrlIndexable(url, false) == ThreeState.YES));
+  }
+
+  private static @Unmodifiable List<Path> contentRootsUnderExcluded(Path directory) {
+    var roots = new LinkedHashSet<Path>();
+    String url = toUrl(directory);
+    for (Project openProject : ProjectManager.getInstance().getOpenProjects()) {
+      ReadAction.runBlocking(() -> {
+        var workspaceFileIndex = WorkspaceFileIndexEx.getInstance(openProject);
+        var vfuManager = (VirtualFileUrlManagerImpl)WorkspaceModel.getInstance(openProject).getVirtualFileUrlManager();
+        var vfu = vfuManager.findByUrl(url);
+        if (vfu == null) return;
+        vfuManager.processChildrenRecursively(vfu, child -> {
+          if (workspaceFileIndex.isUrlIndexable(child.getUrl(), false) == ThreeState.YES) {
+            roots.add(VirtualFileUrlManagerUtil.toPath(child));
+            return TreeNodeProcessingResult.SKIP_CHILDREN;
+          }
+          return TreeNodeProcessingResult.CONTINUE;
+        });
+      });
+    }
+    return ContainerUtil.filter(roots, root -> Files.exists(root));
+  }
+
+  private static @NotNull String toUrl(Path directory) {
+    return URLUtil.FILE_PROTOCOL + URLUtil.SCHEME_SEPARATOR + FileUtilRt.toSystemIndependentName(directory.toString());
+  }
+
+  private record ScannedChildren(ChildInfo @NotNull [] children, boolean childrenComplete) {
+  }
+
+  // scan all children of "root" (except excluded dirs) recursively and return them in a ScannedChildren record
   // `null` means error during scan
-  private ChildInfo @Nullable [] scanChildren(Path root, List<Path> excluded, NewVirtualFile currentDir) {
+  private @Nullable ScannedChildren scanChildren(Path root, List<Path> excluded, NewVirtualFile currentDir) {
     // the stack contains a list of children found so far in the current directory
     Stack<List<ChildInfo>> stack = new Stack<>();
     int nameId = vfsPeer.getNameId("");
-    ChildInfo fakeRoot = new ChildInfoImpl(nameId, null, null, null);
+    ChildInfo fakeRoot = new ChildInfoImpl(nameId, null, null, null, false);
     stack.push(new SmartList<>(fakeRoot));
+    /*
+    1. (if file) `visitFile`: on top of the stack lays a list of children of the parent directory.
+    Add fileInfo of the current file to the list. Skip steps 2-4
+
+    1. (if directory) `preVisitDirectory`
+      calls `visitFile` (same as for a file)
+      a) (if not excluded) push an empty list on the stack if the directory
+      b) (if excluded) skip steps 2-4
+      c) (if excluded but has included files underneath) collect info about those includes.
+      Add this info into the last childInfo in the list on top of the stack (this child info is placed in `visitFile`)
+
+    2. `visitFile`: append a fileInfo to the list on top of the stack
+    3. (if directory) visit children, perform steps 1-4 on each of them
+
+    4. (if directory) `postVisitDirectory`
+    At this point on top of the stack is a list of children of the current directory.
+    Underneath is a list of children of the parent directory. At the end of this list is our directory info from step 2 without children.
+    Add children to this info
+     */
     FileVisitor<Path> visitor = new SimpleFileVisitor<>() {
       private int checkCanceledCount;
 
@@ -658,9 +740,19 @@ final class RefreshWorker {
           return FileVisitResult.SKIP_SUBTREE;  // bypassing NTFS reparse points
         }
         // on average, this "excluded" array is small for any particular root, so linear search it is.
-        if (excluded.contains(dir)) {
-          // skipping excluded roots (record its attributes nevertheless), even if we have content roots beneath
-          // stop optimization right here - it's too much pain to track all these nested content/excluded/content otherwise
+        if (excluded.contains(dir) && !isInContent(dir)) {
+          List<Path> contentUnderExcluded = contentRootsUnderExcluded(dir);
+          if (contentUnderExcluded.isEmpty()) {
+            return FileVisitResult.SKIP_SUBTREE;
+          }
+          // `dir` is excluded but has registered content roots beneath. Replace the ChildInfo for `dir`
+          // (recorded by `visitFile(dir, attrs)` above when `dir != root`, or the pre-seeded fakeRoot otherwise)
+          // with one whose children contain shared intermediate dirs down to the scanned content roots.
+          // We do not push to the stack because `postVisitDirectory` will not fire after `SKIP_SUBTREE`.
+          List<ChildInfo> parentChildren = stack.peek();
+          ChildInfo dirInfo = ContainerUtil.getLastItem(parentChildren);
+          PathTreeNode rootPathNode = new PathTreeNode(dir, contentUnderExcluded);
+          parentChildren.set(parentChildren.size() - 1, withChildrenUnderExcluded(rootPathNode, dirInfo, excluded, currentDir));
           return FileVisitResult.SKIP_SUBTREE;
         }
         stack.push(new ArrayList<>());
@@ -672,11 +764,7 @@ final class RefreshWorker {
         if ((++checkCanceledCount & 0xf) == 0) {
           checkCancelled(currentDir);
         }
-        FileAttributes attributes = FileAttributes.fromNio(file, attrs);
-        String symLinkTarget = attrs.isSymbolicLink() ? FileUtilRt.toSystemIndependentName(file.toRealPath().toString()) : null;
-        int nameId = vfsPeer.getNameId(file.getFileName().toString());
-        ChildInfo info = new ChildInfoImpl(nameId, attributes, null, symLinkTarget);
-        stack.peek().add(info);
+        stack.peek().add(createChildInfo(file, attrs));
         return FileVisitResult.CONTINUE;
       }
 
@@ -687,7 +775,7 @@ final class RefreshWorker {
         // store children back
         ChildInfo parentInfo = ContainerUtil.getLastItem(parentInfos);
         ChildInfo[] children = childInfos.toArray(ChildInfo.EMPTY_ARRAY);
-        ChildInfo newInfo = ((ChildInfoImpl)parentInfo).withChildren(children);
+        ChildInfo newInfo = ((ChildInfoImpl)parentInfo).withChildren(children, true);
         parentInfos.set(parentInfos.size() - 1, newInfo);
         return FileVisitResult.CONTINUE;
       }
@@ -706,7 +794,75 @@ final class RefreshWorker {
       return null;  // tell the client we didn't find any children, abandon the optimization altogether
     }
 
-    return stack.pop().get(0).getChildren();
+    ChildInfo rootInfo = stack.pop().getFirst();
+    ChildInfo[] children = rootInfo.getChildren();
+    return children == null ? null : new ScannedChildren(children, rootInfo.isAllChildren());
+  }
+
+  private ChildInfo readChildInfo(Path file) throws IOException {
+    BasicFileAttributes attrs = Files.readAttributes(file, BasicFileAttributes.class, LinkOption.NOFOLLOW_LINKS);
+    return createChildInfo(file, attrs);
+  }
+
+  private ChildInfo createChildInfo(Path file, BasicFileAttributes attrs) throws IOException {
+    FileAttributes attributes = FileAttributes.fromNio(file, attrs);
+    String symLinkTarget = attrs.isSymbolicLink() ? FileUtilRt.toSystemIndependentName(file.toRealPath().toString()) : null;
+    int nameId = vfsPeer.getNameId(file.getFileName().toString());
+    return new ChildInfoImpl(nameId, attributes, null, symLinkTarget, false);
+  }
+
+  private ChildInfo withChildrenUnderExcluded(PathTreeNode node, ChildInfo info, List<Path> nestedExcluded, NewVirtualFile currentDir) {
+    if (node.isContentRoot) {
+      ScannedChildren children = scanChildren(node.path, nestedExcluded, currentDir);
+      return children == null ? info : ((ChildInfoImpl)info).withChildren(children.children(), children.childrenComplete());
+    }
+
+    List<ChildInfo> children = new ArrayList<>(node.children.size());
+    for (PathTreeNode childNode : node.children.values()) {
+      try {
+        ChildInfo childInfo = readChildInfo(childNode.path);
+        ChildInfo childInfoWithChildren = withChildrenUnderExcluded(childNode, childInfo, nestedExcluded, currentDir);
+        children.add(childInfoWithChildren);
+      }
+      catch (IOException e) {
+        LOG.warn(e);
+      }
+    }
+    return ((ChildInfoImpl)info).withChildren(children.toArray(ChildInfo.EMPTY_ARRAY), false);
+  }
+
+  private static final class PathTreeNode {
+    private final Path path;
+    private final Map<Path, PathTreeNode> children = new LinkedHashMap<>();
+    private boolean isContentRoot;
+
+    private PathTreeNode(Path path) {
+      this.path = path;
+    }
+
+    private PathTreeNode(Path dir, List<Path> contentRootsUnder) {
+      this(dir);
+      for (var root : contentRootsUnder) {
+        addContentRoot(dir.relativize(root));
+      }
+    }
+
+    private void addContentRoot(Path relativePath) {
+      if (relativePath.toString().isEmpty()) {
+        isContentRoot = true;
+        children.clear();
+        return;
+      }
+
+      PathTreeNode node = this;
+      for (Path path : relativePath) {
+        Path childPath = node.path.resolve(path);
+        node = node.children.computeIfAbsent(childPath, child -> new PathTreeNode(child));
+        if (node.isContentRoot) return;
+      }
+      node.isContentRoot = true;
+      node.children.clear();
+    }
   }
 
   private void checkAndScheduleChildRefresh(List<VFileEvent> events,
@@ -743,11 +899,15 @@ final class RefreshWorker {
       long oldTimestamp = persistentFS.getTimeStamp(child), newTimestamp = childAttributes.lastModified;
       long oldLength = persistentFS.getLastRecordedLength(child), newLength = childAttributes.length;
       if (oldTimestamp != newTimestamp || oldLength != newLength) {
-        if (LOG.isTraceEnabled()) LOG.trace(
-          "update file=" + child +
-          (oldTimestamp != newTimestamp ? " TS=" + oldTimestamp + "->" + newTimestamp : "") +
-          (oldLength != newLength ? " len=" + oldLength + "->" + newLength : ""));
-        events.add(new VFileContentChangeEvent(REQUESTOR, child, child.getModificationStamp(), VFileContentChangeEvent.UNDEFINED_TIMESTAMP_OR_LENGTH, oldTimestamp, newTimestamp, oldLength, newLength));
+        if (LOG.isTraceEnabled()) {
+          LOG.trace("update file=" + child +
+                    (oldTimestamp != newTimestamp ? " TS=" + oldTimestamp + "->" + newTimestamp : "") +
+                    (oldLength != newLength ? " len=" + oldLength + "->" + newLength : ""));
+        }
+
+        events.add(new VFileContentChangeEvent(REQUESTOR, child, child.getModificationStamp(),
+                                               VFileContentChangeEvent.UNDEFINED_TIMESTAMP_OR_LENGTH, oldTimestamp, newTimestamp,
+                                               oldLength, newLength));
       }
       child.markClean();
     }

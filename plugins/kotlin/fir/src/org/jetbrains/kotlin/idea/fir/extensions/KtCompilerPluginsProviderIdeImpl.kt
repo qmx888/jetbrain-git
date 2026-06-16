@@ -26,7 +26,6 @@ import org.jetbrains.kotlin.idea.compiler.configuration.KotlinCompilerSettingsLi
 import org.jetbrains.kotlin.idea.facet.isKotlinFacet
 import org.jetbrains.kotlin.idea.workspaceModel.KotlinSettingsEntity
 
-@OptIn(ExperimentalCompilerApi::class)
 @ApiStatus.Internal
 internal class KtCompilerPluginsProviderIdeImpl(
     private val project: Project,
@@ -79,7 +78,6 @@ internal class KtCompilerPluginsProviderIdeImpl(
         )
     }
 
-    @OptIn(KaExperimentalApi::class)
     override fun <T : Any> getRegisteredExtensions(module: KaModule, extensionType: ExtensionPointDescriptor<T>): List<T> {
         val pluginsCache = pluginsCacheCachedValue.value ?: return emptyList()
         return pluginsCache.getRegisteredExtensions(
@@ -103,9 +101,16 @@ internal class KtCompilerPluginsProviderIdeImpl(
     /**
      * Throws away the cache for all the registered plugins, and executes all the disposables
      * registered in the corresponding [CompilerPluginRegistrar.ExtensionStorage]s.
+     *
+     * Note: we drop the [pluginsCacheCachedValue] synchronously, so that
+     * the [KtCompilerPluginsCache.new] call and all the calls to [KotlinBundledFirCompilerPluginProvider.provideBundledPluginJar] in it
+     * either have not yet started, or have already completed.
+     *
+     * Otherwise, race conditions similar to KTIJ-37664 may occur.
      */
     private fun resetPluginsCache() {
-        pluginsCacheCachedValue.drop()?.dispose()
+        val cache = pluginsCacheCachedValue.dropSynchronously()
+        cache?.dispose()
     }
 
     companion object {

@@ -4,7 +4,6 @@ package org.jetbrains.plugins.gradle.execution.target
 import com.intellij.execution.process.ProcessEvent
 import com.intellij.execution.process.ProcessListener
 import com.intellij.execution.process.ProcessOutputType
-import com.intellij.execution.process.ProcessOutputTypes
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.diagnostic.Logger
 import com.intellij.openapi.diagnostic.logger
@@ -16,6 +15,7 @@ import com.intellij.util.concurrency.annotations.RequiresBackgroundThread
 import com.intellij.util.text.nullize
 import org.gradle.initialization.BuildEventConsumer
 import org.gradle.tooling.ResultHandler
+import org.jetbrains.plugins.gradle.util.GradleBundle
 import java.util.concurrent.Future
 import java.util.concurrent.atomic.AtomicBoolean
 
@@ -47,14 +47,19 @@ internal class GradleServerProcessListener(
     if (event.text != null) {
       targetProgressIndicator.addText(event.text, outputType)
     }
+    if (event.exitCode != 0) {
+      targetProgressIndicator.addText(GradleBundle.message("gradle.target.execution.crash"), ProcessOutputType.STDERR)
+      // no need to wait for proper listener job termination
+      listenerJob?.cancel(true)
+    }
   }
 
   override fun onTextAvailable(event: ProcessEvent, outputType: Key<*>) {
     log.traceIfNotEmpty(event.text)
-    if (connectionAddressReceived.get()) {
+    if (connectionAddressReceived.get() && !ProcessOutputType.isStderr(outputType)) {
       return
     }
-    if (outputType === ProcessOutputTypes.STDERR) {
+    if (ProcessOutputType.isStderr(outputType)) {
       targetProgressIndicator.addText(event.text, outputType)
     }
     if (event.text.startsWith(CONNECTION_CONF_LINE_PREFIX)) {

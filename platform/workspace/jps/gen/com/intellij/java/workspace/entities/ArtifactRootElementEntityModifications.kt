@@ -3,7 +3,12 @@
 
 package com.intellij.java.workspace.entities
 
-import com.intellij.platform.workspace.storage.*
+import com.intellij.java.workspace.entities.impl.ArtifactRootElementEntityImpl
+import com.intellij.platform.workspace.storage.EntitySource
+import com.intellij.platform.workspace.storage.EntityType
+import com.intellij.platform.workspace.storage.GeneratedCodeApiVersion
+import com.intellij.platform.workspace.storage.MutableEntityStorage
+import com.intellij.platform.workspace.storage.WorkspaceEntityBuilder
 
 @GeneratedCodeApiVersion(3)
 interface ArtifactRootElementEntityBuilder : WorkspaceEntityBuilder<ArtifactRootElementEntity>,
@@ -16,6 +21,7 @@ interface ArtifactRootElementEntityBuilder : WorkspaceEntityBuilder<ArtifactRoot
 
 internal object ArtifactRootElementEntityType : EntityType<ArtifactRootElementEntity, ArtifactRootElementEntityBuilder>() {
   override val entityClass: Class<ArtifactRootElementEntity> get() = ArtifactRootElementEntity::class.java
+  override val entityImplBuilderClass: Class<*> get() = ArtifactRootElementEntityImpl.Builder::class.java
   operator fun invoke(
     entitySource: EntitySource,
     init: (ArtifactRootElementEntityBuilder.() -> Unit)? = null,

@@ -6,11 +6,11 @@ import com.intellij.openapi.application.EDT
 import com.intellij.openapi.application.ModalityState
 import com.intellij.openapi.application.asContextElement
 import com.intellij.openapi.diagnostic.logger
-import com.intellij.openapi.diagnostic.thisLogger
 import com.intellij.terminal.JBTerminalSystemSettingsProviderBase
-import com.intellij.terminal.frontend.view.hyperlinks.FrontendTerminalHyperlinkFacade
 import com.intellij.util.containers.DisposableWrapperList
+import fleet.rpc.client.durable
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineName
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Runnable
@@ -21,8 +21,6 @@ import org.jetbrains.plugins.terminal.session.TerminalStartupOptions
 import org.jetbrains.plugins.terminal.session.impl.TerminalBeepEvent
 import org.jetbrains.plugins.terminal.session.impl.TerminalContentUpdatedEvent
 import org.jetbrains.plugins.terminal.session.impl.TerminalCursorPositionChangedEvent
-import org.jetbrains.plugins.terminal.session.impl.TerminalHyperlinksChangedEvent
-import org.jetbrains.plugins.terminal.session.impl.TerminalHyperlinksHeartbeatEvent
 import org.jetbrains.plugins.terminal.session.impl.TerminalInitialStateEvent
 import org.jetbrains.plugins.terminal.session.impl.TerminalOutputEvent
 import org.jetbrains.plugins.terminal.session.impl.TerminalSession
@@ -37,9 +35,7 @@ import kotlin.coroutines.cancellation.CancellationException
 internal class TerminalSessionController(
   private val sessionModel: TerminalSessionModel,
   private val outputModelController: TerminalOutputModelController,
-  private val outputHyperlinkFacade: FrontendTerminalHyperlinkFacade?,
   private val alternateBufferModelController: TerminalOutputModelController,
-  private val alternateBufferHyperlinkFacade: FrontendTerminalHyperlinkFacade?,
   private val startupOptionsDeferred: CompletableDeferred<TerminalStartupOptions>,
   private val settings: JBTerminalSystemSettingsProviderBase,
   private val coroutineScope: CoroutineScope,
@@ -50,11 +46,17 @@ internal class TerminalSessionController(
   private val edtContext = Dispatchers.EDT + ModalityState.any().asContextElement()
 
   fun handleEvents(session: TerminalSession) {
-    coroutineScope.launch {
-      val outputFlow = session.getOutputFlow()
-      withContext(edtContext) {
-        outputFlow.collect { events ->
-          doHandleEvents(events)
+    coroutineScope.launch(CoroutineName("Output flow collection")) {
+      // Get output flow again even if it was terminated.
+      // It can happen in case of RemDev if there were any connection problems and backend decided to terminate the flow.
+      while (!session.isClosed) {
+        // Wrap the flow collection into `durable` call to retry in case of connection issues.
+        durable {
+          session.getOutputFlow().collect { events ->
+            withContext(edtContext) {
+              doHandleEvents(events)
+            }
+          }
         }
       }
     }
@@ -69,7 +71,7 @@ internal class TerminalSessionController(
         throw e
       }
       catch (t: Throwable) {
-        thisLogger().error(t)
+        LOG.error(t)
       }
     }
   }
@@ -93,8 +95,6 @@ internal class TerminalSessionController(
 
         outputModelController.model.restoreFromState(event.outputModelState.toState())
         alternateBufferModelController.model.restoreFromState(event.alternateBufferState.toState())
-        outputHyperlinkFacade?.restoreFromState(event.outputHyperlinksState)
-        alternateBufferHyperlinkFacade?.restoreFromState(event.alternateBufferHyperlinksState)
       }
       is TerminalContentUpdatedEvent -> {
         val controller = getCurrentOutputModelController()
@@ -116,20 +116,10 @@ internal class TerminalSessionController(
       TerminalSessionTerminatedEvent -> {
         fireSessionTerminated()
       }
-      is TerminalHyperlinksHeartbeatEvent -> {
-        LOG.warn("TerminalHyperlinksHeartbeatEvent isn't supposed to reach the frontend")
-      }
-      is TerminalHyperlinksChangedEvent -> {
-        getCurrentHyperlinkFacade(event)?.updateHyperlinks(event)
-      }
       else -> {
         // do nothing
       }
     }
-  }
-
-  private fun getCurrentHyperlinkFacade(event: TerminalHyperlinksChangedEvent): FrontendTerminalHyperlinkFacade? {
-    return if (event.isInAlternateBuffer) alternateBufferHyperlinkFacade else outputHyperlinkFacade
   }
 
   private fun getCurrentOutputModelController(): TerminalOutputModelController {
@@ -149,7 +139,7 @@ internal class TerminalSessionController(
         listener.run()
       }
       catch (t: Throwable) {
-        thisLogger().error("Unhandled exception in termination listener", t)
+        LOG.error("Unhandled exception in termination listener", t)
       }
     }
   }

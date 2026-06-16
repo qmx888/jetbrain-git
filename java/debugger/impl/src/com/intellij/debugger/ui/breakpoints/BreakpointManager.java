@@ -12,6 +12,7 @@ import com.intellij.debugger.engine.BreakpointStepMethodFilter;
 import com.intellij.debugger.engine.DebugProcessImpl;
 import com.intellij.debugger.engine.LightOrRealThreadInfo;
 import com.intellij.debugger.engine.RealThreadInfo;
+import com.intellij.debugger.engine.SuspendContextImpl;
 import com.intellij.debugger.engine.requests.RequestManagerImpl;
 import com.intellij.debugger.impl.DebuggerContextImpl;
 import com.intellij.debugger.impl.DebuggerContextListener;
@@ -19,8 +20,8 @@ import com.intellij.debugger.impl.DebuggerManagerImpl;
 import com.intellij.debugger.impl.DebuggerSession;
 import com.intellij.debugger.impl.DebuggerUtilsAsync;
 import com.intellij.debugger.impl.DebuggerUtilsImpl;
+import com.intellij.debugger.memory.utils.StackFrameItem;
 import com.intellij.openapi.Disposable;
-import com.intellij.openapi.application.ApplicationManager;
 import com.intellij.openapi.application.ReadAction;
 import com.intellij.openapi.application.WriteAction;
 import com.intellij.openapi.diagnostic.Logger;
@@ -47,6 +48,7 @@ import com.intellij.util.concurrency.AppExecutorUtil;
 import com.intellij.util.concurrency.ThreadingAssertions;
 import com.intellij.util.containers.ContainerUtil;
 import com.intellij.util.messages.MessageBusConnection;
+import com.intellij.xdebugger.XDebugSession;
 import com.intellij.xdebugger.XDebuggerManager;
 import com.intellij.xdebugger.XDebuggerUtil;
 import com.intellij.xdebugger.XSourcePosition;
@@ -327,7 +329,7 @@ public class BreakpointManager {
   }
 
   private void doRead(final @NotNull Element parentNode) {
-    ApplicationManager.getApplication().runReadAction(() -> {
+    ReadAction.runBlocking(() -> {
       final Map<String, Breakpoint> nameToBreakpointMap = new HashMap<>();
       try {
         final List groups = parentNode.getChildren();
@@ -351,12 +353,12 @@ public class BreakpointManager {
             anyExceptionBreakpointGroup = group.getChild(AnyExceptionBreakpoint.ANY_EXCEPTION_BREAKPOINT.toString());
             //final BreakpointFactory factory = BreakpointFactory.getInstance(breakpointCategory);
             //if (factory != null) {
-              for (Element breakpointNode : group.getChildren("breakpoint")) {
-                //Breakpoint breakpoint = factory.createBreakpoint(myProject, breakpointNode);
-                Breakpoint breakpoint = createBreakpoint(categoryName, breakpointNode);
-                breakpoint.readExternal(breakpointNode);
-                nameToBreakpointMap.put(breakpoint.getDisplayName(), breakpoint);
-              }
+            for (Element breakpointNode : group.getChildren("breakpoint")) {
+              //Breakpoint breakpoint = factory.createBreakpoint(myProject, breakpointNode);
+              Breakpoint breakpoint = createBreakpoint(categoryName, breakpointNode);
+              breakpoint.readExternal(breakpointNode);
+              nameToBreakpointMap.put(breakpoint.getDisplayName(), breakpoint);
+            }
             //}
           }
           else {
@@ -408,7 +410,8 @@ public class BreakpointManager {
           }
 
           boolean leaveEnabled = Boolean.parseBoolean(rule.getAttributeValue("leaveEnabled"));
-          XDependentBreakpointManager dependentBreakpointManager = ((XBreakpointManagerImpl)getXBreakpointManager()).getDependentBreakpointManager();
+          XDependentBreakpointManager dependentBreakpointManager =
+            ((XBreakpointManagerImpl)getXBreakpointManager()).getDependentBreakpointManager();
           dependentBreakpointManager.setMasterBreakpoint(slaveBreakpoint.myXBreakpoint, masterBreakpoint.myXBreakpoint, leaveEnabled);
           //addBreakpointRule(new EnableBreakpointRule(BreakpointManager.this, masterBreakpoint, slaveBreakpoint, leaveEnabled));
         }
@@ -571,7 +574,7 @@ public class BreakpointManager {
   }
 
   /** @deprecated Use removeThreadFilter or version with LightOrRealThreadInfo parameter */
-  @Deprecated
+  @Deprecated(forRemoval = true)
   public void applyThreadFilter(final @NotNull DebugProcessImpl debugProcess, @Nullable ThreadReference newFilterThread) {
     if (newFilterThread != null) {
       applyThreadFilter(debugProcess, new RealThreadInfo(newFilterThread));
@@ -692,7 +695,19 @@ public class BreakpointManager {
     myLogMessageDispatcher.addListener(listener, parentDisposable);
   }
 
-  void multicastLogMessage(Breakpoint<?> breakpoint, String message, DebugProcessImpl debugProcess) {
-    myLogMessageDispatcher.getMulticaster().onLogMessage(breakpoint, message, debugProcess);
+  void beforeLoggingBreakpoint(@NotNull SuspendContextImpl context) {
+    myLogMessageDispatcher.getMulticaster().beforeLoggingBreakpoint(context);
+  }
+
+  void multicastLogMessage(@NotNull Breakpoint<?> breakpoint,
+                           @NotNull String message,
+                           @NotNull DebugProcessImpl debugProcess,
+                           @Nullable List<StackFrameItem> stack) {
+    myLogMessageDispatcher.getMulticaster().onLogMessage(breakpoint, message, debugProcess, stack);
+    XDebugSession session = debugProcess.getSession().getXDebugSession();
+    XBreakpointManagerImpl manager = XDebuggerManager.getInstance(myProject).getBreakpointManager() instanceof XBreakpointManagerImpl managerImpl ? managerImpl : null;
+    if (session != null && manager != null) {
+      manager.fireBreakpointLogMessage(breakpoint.getXBreakpoint(), session, message);
+    }
   }
 }

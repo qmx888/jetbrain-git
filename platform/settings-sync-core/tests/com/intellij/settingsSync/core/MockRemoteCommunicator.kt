@@ -1,9 +1,6 @@
-@file:OptIn(IntellijInternalApi::class)
-
 package com.intellij.settingsSync.core
 
 import com.intellij.openapi.diagnostic.logger
-import com.intellij.openapi.util.IntellijInternalApi
 import com.intellij.openapi.util.io.FileUtil
 import com.intellij.settingsSync.core.auth.SettingsSyncAuthService
 import com.intellij.settingsSync.core.communicator.SettingsSyncCommunicatorProvider
@@ -31,6 +28,18 @@ internal class MockRemoteCommunicator(override val userId: String) : AbstractSer
   private val LOG = logger<MockRemoteCommunicator>()
   var isConnected = true
   var wasDisposed = false
+
+  /**
+   * Optional hook invoked at the start of [checkServerState].
+   * Useful for simulating blocking calls (e.g. waiting for APP_READY) in tests.
+   */
+  @Volatile
+  var checkServerStateInterceptor: (() -> Unit)? = null
+
+  override fun checkServerState(): ServerState {
+    checkServerStateInterceptor?.invoke()
+    return super.checkServerState()
+  }
 
   private lateinit var pushedLatch: CompletableDeferred<Unit>
   private lateinit var pushedSnapshot: SettingsSnapshot

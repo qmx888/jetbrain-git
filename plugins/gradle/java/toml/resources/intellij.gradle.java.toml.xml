@@ -31,4 +31,8 @@
 
 
   </extensions>
+  <extensions defaultExtensionNs="org.jetbrains.plugins.gradle">
+    <versionCatalogPsiResolver implementation="com.intellij.gradle.java.toml.GradleVersionCatalogPsiResolverImpl"/>
+    <versionCatalogEntrySearcher implementation="com.intellij.gradle.java.toml.service.GradleTomlVersionCatalogEntrySearcher"/>
+  </extensions>
 </idea-plugin>

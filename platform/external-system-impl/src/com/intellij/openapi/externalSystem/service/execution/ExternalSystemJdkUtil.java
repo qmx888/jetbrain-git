@@ -215,7 +215,7 @@ public final class ExternalSystemJdkUtil {
   /**
    * @deprecated use {@link #suggestJdkHomePaths()} instead.
    */
-  @Deprecated
+  @Deprecated(forRemoval = true)
   public static @NotNull Collection<String> suggestJdkHomePaths() {
     return getJavaSdkType().suggestHomePaths();
   }
@@ -282,12 +282,26 @@ public final class ExternalSystemJdkUtil {
   }
 
   @ApiStatus.Internal
-  public static @Nullable Sdk lookup(@NotNull Project project, @NotNull Function<SdkLookupBuilder, SdkLookupBuilder> customizer) {
+  public static @Nullable Sdk lookupJdkByName(@NotNull Project project, @NotNull String sdkName) {
+    return lookup(project, builder -> {
+      return builder.withSdkName(sdkName);
+    });
+  }
+
+  @ApiStatus.Internal
+  public static @Nullable Sdk lookupJdkByVersion(@NotNull Project project, @NotNull JavaVersion sdkVersion) {
+    return lookup(project, builder ->
+      builder.withVersionFilter(it -> matchJavaVersion(sdkVersion, it))
+    );
+  }
+
+  @ApiStatus.Internal
+  private static @Nullable Sdk lookup(@NotNull Project project, @NotNull Function<SdkLookupBuilder, SdkLookupBuilder> customizer) {
     return SdkLookupUtil.lookupSdkBlocking(((builder) -> {
       return customizer.apply(
         builder.withProject(project)
           .withSdkType(getJavaSdkType())
-          .onDownloadableSdkSuggested(__ -> SdkLookupDecision.STOP)
+          .onDownloadableSdkSuggested(_ -> SdkLookupDecision.STOP)
       );
     }));
   }
@@ -338,5 +352,12 @@ public final class ExternalSystemJdkUtil {
     var sdkTable = project == null ? ProjectJdkTable.getInstance() : ProjectJdkTable.getInstance(project);
     var allJdks = sdkTable.getSdksOfType(getJavaSdkType());
     return ContainerUtil.find(allJdks, it -> FileUtil.pathsEqual(jdkHome, it.getHomePath()));
+  }
+
+  @ApiStatus.Internal
+  public static boolean isSdkRegisteredInSdkTable(@NotNull Project project, @NotNull Sdk sdk) {
+    var sdkTable = ProjectJdkTable.getInstance(project);
+    var allSdks = sdkTable.getSdksOfType(sdk.getSdkType());
+    return ContainerUtil.exists(allSdks, sdk::equals);
   }
 }

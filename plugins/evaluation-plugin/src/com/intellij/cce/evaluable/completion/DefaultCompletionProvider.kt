@@ -1,7 +1,6 @@
 // Copyright 2000-2023 JetBrains s.r.o. and contributors. Use of this source code is governed by the Apache 2.0 license.
 package com.intellij.cce.evaluable.completion
 
-import com.intellij.cce.core.CommonFeatures
 import com.intellij.cce.core.Features
 import com.intellij.cce.core.Lookup
 import com.intellij.cce.evaluable.common.asSuggestion
@@ -14,16 +13,21 @@ import com.intellij.codeInsight.lookup.LookupElement
 import com.intellij.codeInsight.lookup.LookupEx
 import com.intellij.codeInsight.lookup.LookupManager
 import com.intellij.codeInsight.lookup.impl.LookupImpl
-import com.intellij.completion.ml.actions.MLCompletionFeaturesUtil
-import com.intellij.completion.ml.util.prefix
 import com.intellij.lang.Language
 import com.intellij.openapi.diagnostic.logger
 import com.intellij.openapi.editor.Editor
+import com.intellij.openapi.project.Project
 
 class DefaultCompletionProvider : SuggestionsProvider {
   override val name: String = "DEFAULT"
 
-  override fun getSuggestions(expectedText: String, editor: Editor, language: Language, comparator: (String, String) -> Boolean): Lookup = readActionInSmartMode(editor.project!!) {
+  override fun getSuggestions(
+    project: Project,
+    expectedText: String,
+    editor: Editor,
+    language: Language,
+    comparator: (String, String) -> Boolean,
+  ): Lookup = readActionInSmartMode(editor.project!!) {
     val start = System.currentTimeMillis()
     val isNew = LookupManager.getActiveLookup(editor) == null
     val activeLookup = LookupManager.getActiveLookup(editor) ?: invokeCompletion(editor)
@@ -35,14 +39,9 @@ class DefaultCompletionProvider : SuggestionsProvider {
     }
 
     val lookup = activeLookup as LookupImpl
-    val features = MLCompletionFeaturesUtil.getCommonFeatures(lookup)
-    val resultFeatures = Features(
-      CommonFeatures(features.context, features.user, features.session),
-      lookup.items.map { MLCompletionFeaturesUtil.getElementFeatures(lookup, it).features }
-    )
     val suggestions = lookup.items.map { it.asSuggestion() }
 
-    return@readActionInSmartMode Lookup.fromExpectedText(expectedText, lookup.prefix(), suggestions, latency, resultFeatures, isNew,
+    return@readActionInSmartMode Lookup.fromExpectedText(expectedText, lookup.prefix(), suggestions, latency, Features.EMPTY, isNew,
                                                          editor.caretModel.logicalPosition.column, comparator)
   }
 
@@ -69,3 +68,15 @@ class DefaultCompletionProvider : SuggestionsProvider {
 }
 
 private val LOG = logger<DefaultCompletionProvider>()
+
+fun com.intellij.codeInsight.lookup.Lookup.prefix(): String {
+  val text = editor.document.text
+  val offset = editor.caretModel.offset
+  var startOffset = offset
+  for (i in offset - 1 downTo 0) {
+    if (!text[i].isJavaIdentifierPart()) break
+    startOffset = i
+  }
+  return text.substring(startOffset, offset)
+}
+

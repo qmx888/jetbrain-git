@@ -12,12 +12,12 @@ import org.jdom.Element
 import org.jetbrains.kotlin.idea.gradleJava.KotlinJavaGradleBundle
 import org.jetbrains.plugins.gradle.service.execution.GradleRunConfiguration
 
-private val isComposeJvmKey = Key.create<Boolean>("isComposeJvm")
+private val isComposeGradlePluginConfiguredKey = Key.create<Boolean>("isComposeJvm")
 private val mainFunctionClassFqnKey = Key.create<String>("mainClassFqn")
 
-var ExternalSystemRunConfiguration.isComposeJvm: Boolean
-    get() = getUserData<Boolean>(isComposeJvmKey) == true
-    set(value) = putUserData<Boolean>(isComposeJvmKey, value)
+var ExternalSystemRunConfiguration.isComposeGradlePluginConfigured: Boolean
+    get() = getUserData<Boolean>(isComposeGradlePluginConfiguredKey) == true
+    set(value) = putUserData<Boolean>(isComposeGradlePluginConfiguredKey, value)
 
 var ExternalSystemRunConfiguration.mainFunctionClassFqn: String?
     get() = getUserData<String>(mainFunctionClassFqnKey) as? String
@@ -28,15 +28,15 @@ internal class ComposeJvmRunConfigurationExtension :
     ExternalSystemReifiedRunConfigurationExtension<GradleRunConfiguration>(GradleRunConfiguration::class.java) {
 
     private companion object {
-        const val ROOT_KEY = "ComposeJvm"
-        const val MAIN_FUNCTION_FILE_KEY = "mainFunctionFile"
+        const val ROOT_KEY = "composeJvm"
+        const val MAIN_FUNCTION_CLASS_FQN_KEY = "mainFunctionClassFqn"
     }
 
     override fun SettingsEditorFragmentContainer<GradleRunConfiguration>.configureFragments(
         configuration: GradleRunConfiguration
     ) {
         // fragment will only be visible + accessible if set programmatically for this run configuration
-        if (!configuration.isComposeJvm) return
+        if (!configuration.isComposeGradlePluginConfigured) return
 
         addRemovableLabeledTextSettingsEditorFragment(
             settingsFragmentInfo = object : LabeledSettingsFragmentInfo {
@@ -55,10 +55,10 @@ internal class ComposeJvmRunConfigurationExtension :
 
     override fun writeExternal(runConfiguration: ExternalSystemRunConfiguration, element: Element) {
         super.writeExternal(runConfiguration, element)
-        if (!runConfiguration.isComposeJvm) return
+        if (!runConfiguration.isComposeGradlePluginConfigured) return
 
         element.addContent(Element(ROOT_KEY).apply {
-            addContent(Element(MAIN_FUNCTION_FILE_KEY).apply { text = runConfiguration.mainFunctionClassFqn })
+            addContent(Element(MAIN_FUNCTION_CLASS_FQN_KEY).apply { text = runConfiguration.mainFunctionClassFqn })
         })
     }
 
@@ -66,7 +66,7 @@ internal class ComposeJvmRunConfigurationExtension :
         super.readExternal(runConfiguration, element)
         val myElement = element.getChild(ROOT_KEY) ?: return
 
-        runConfiguration.isComposeJvm = true
-        runConfiguration.mainFunctionClassFqn = myElement.getChild(MAIN_FUNCTION_FILE_KEY)?.text ?: ""
+        runConfiguration.isComposeGradlePluginConfigured = true
+        runConfiguration.mainFunctionClassFqn = myElement.getChild(MAIN_FUNCTION_CLASS_FQN_KEY)?.text ?: ""
     }
 }

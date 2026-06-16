@@ -103,6 +103,7 @@ class EditorWindow internal constructor(
   val owner: EditorsSplitters,
   @JvmField internal val coroutineScope: CoroutineScope,
 ) {
+  @Internal
   companion object {
     @JvmField
     val DATA_KEY: DataKey<EditorWindow> = DataKey.create("editorWindow")
@@ -138,7 +139,7 @@ class EditorWindow internal constructor(
   val isDisposed: Boolean
     get() = !coroutineScope.isActive
 
-  private val removedTabs = ArrayDeque<Pair<String, FileEditorOpenOptions>>()
+  private val removedTabs = ArrayDeque<RemovedTabInfo>()
 
   val isShowing: Boolean
     get() = component.isShowing
@@ -679,12 +680,12 @@ class EditorWindow internal constructor(
   @RequiresEdt
   internal fun restoreClosedTab() {
     val info = removedTabs.removeLastOrNull() ?: return
-    val file = VirtualFileManager.getInstance().findFileByUrl(info.first) ?: return
+    val file = info.restoreFile() ?: return
     manager.openFileImpl(
       window = this,
       _file = file,
       entry = null,
-      options = info.second.copy(selectAsCurrent = true, requestFocus = true, waitForCompositeOpen = false),
+      options = info.openOptions.copy(selectAsCurrent = true, requestFocus = true, waitForCompositeOpen = false),
     )
   }
 
@@ -699,7 +700,8 @@ class EditorWindow internal constructor(
   }
 
   @RequiresEdt
-  internal fun closeFile(file: VirtualFile, composite: EditorComposite, disposeIfNeeded: Boolean = true) {
+  @Internal
+  fun closeFile(file: VirtualFile, composite: EditorComposite, disposeIfNeeded: Boolean = true) {
     runBulkTabChange(owner) {
       val fileEditorManager = manager
       try {
@@ -711,7 +713,8 @@ class EditorWindow internal constructor(
         val editorTabs = tabbedPane.editorTabs
         // composite could close itself on decomposition
         if (componentIndex >= 0) {
-          removedTabs.addLast(file.url to FileEditorOpenOptions(index = componentIndex, pin = composite.isPinned))
+          val openOptions = FileEditorOpenOptions(index = componentIndex, pin = composite.isPinned)
+          removedTabs.addLast(RemovedTabInfo(file, openOptions))
           if (removedTabs.size >= tabLimit) {
             removedTabs.removeFirst()
           }
@@ -1066,7 +1069,7 @@ class EditorWindow internal constructor(
     }
 
     val limit = tabLimit
-    fun isUnderLimit(): Boolean = tabbedPane.tabCount <= limit || tabbedPane.tabCount == 0 || !isAnyTabClosable(fileToIgnore)
+    fun isUnderLimit(): Boolean = (tabbedPane.tabCount - tabsExcludedFromLimitCount()) <= limit || tabbedPane.tabCount == 0 || !isAnyTabClosable(fileToIgnore)
 
     if (isUnderLimit()) {
       return
@@ -1170,14 +1173,13 @@ class EditorWindow internal constructor(
     return isFileOpen(file) && file != fileToIgnore && !isFilePinned(file) && isClosingAllowed(file)
   }
 
-  private fun isClosingAllowed(file: VirtualFile): Boolean {
-    val extensions = EditorAutoClosingHandler.EP_NAME.extensionList
-    if (extensions.isEmpty()) {
-      return true
-    }
+  private fun tabsExcludedFromLimitCount(): Int {
+    return tabbedPane.tabs.tabs.count { !isClosingAllowed(it.composite.file) }
+  }
 
+  private fun isClosingAllowed(file: VirtualFile): Boolean {
     val composite = getComposite(file) ?: return true
-    return extensions.all { it.isClosingAllowed(composite) }
+    return EditorAutoClosingHandler.isClosingAllowed(composite)
   }
 
   override fun toString(): String {
@@ -1337,3 +1339,15 @@ private class MySplitPainter(
 
 internal val TabInfo.composite: EditorComposite
   get() = (component as EditorCompositePanel).composite
+
+private data class RemovedTabInfo(
+  private val file: VirtualFile,
+  val openOptions: FileEditorOpenOptions,
+) {
+  fun restoreFile(): VirtualFile? {
+    if (file.isValid) {
+      return file
+    }
+    return VirtualFileManager.getInstance().findFileByUrl(file.url)
+  }
+}

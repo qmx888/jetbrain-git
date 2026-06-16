@@ -24,6 +24,8 @@ import com.intellij.openapi.application.impl.TestOnlyThreading
 import com.intellij.openapi.application.readActionBlocking
 import com.intellij.openapi.components.serviceAsync
 import com.intellij.openapi.diagnostic.ControlFlowException
+import com.intellij.openapi.diagnostic.debug
+import com.intellij.openapi.diagnostic.fileLogger
 import com.intellij.openapi.diagnostic.getOrLogException
 import com.intellij.openapi.diagnostic.logger
 import com.intellij.openapi.extensions.ExtensionPointListener
@@ -210,6 +212,7 @@ open class StartupManagerImpl(private val project: Project, private val coroutin
 
     val app = ApplicationManager.getApplication()
     if (app.isUnitTestMode) {
+      LOG.debug { "Running startup activities" }
       if (app.isDispatchThread) {
         // doesn't block project opening
         coroutineScope.launch {
@@ -250,8 +253,8 @@ open class StartupManagerImpl(private val project: Project, private val coroutin
             idString != "com.intellij.clion.performanceTesting" &&
             idString != "com.intellij.appcode" &&
             idString != "com.jetbrains.kmm" &&
-            idString != "com.jetbrains.codeWithMe" &&
-            idString != "intellij.rider.plugins.cwm" &&
+            idString != "com.jetbrains.remoteDevelopment" &&
+            idString != "intellij.rider.plugins.remoteDevelopment" &&
             idString != "org.jetbrains.plugins.clion.radler") {
           if (!(idString == "com.intellij.ml.llm" && adapter.assignableToClassName.endsWith("XNextRootPaneCustomizer"))) {
             LOG.error("Only bundled plugin can define ${extensionPoint.name}: ${adapter.pluginDescriptor}")
@@ -441,7 +444,6 @@ open class StartupManagerImpl(private val project: Project, private val coroutin
     synchronized(lock) {
       initProjectStartupActivities.clear()
       postStartupActivities.clear()
-      freezePostStartupActivities = false
       runningProjectActivities.clear()
     }
   }

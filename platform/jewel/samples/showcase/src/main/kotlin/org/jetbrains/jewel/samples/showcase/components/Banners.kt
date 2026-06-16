@@ -21,6 +21,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import java.util.Locale
 import org.jetbrains.jewel.foundation.theme.JewelTheme
 import org.jetbrains.jewel.markdown.MarkdownText
 import org.jetbrains.jewel.ui.component.CheckboxRow
@@ -166,6 +167,7 @@ public fun Banners(modifier: Modifier = Modifier) {
                 }
 
                 InlineInformationBanner(
+                    modifier = Modifier.fillMaxWidth(),
                     text = "Lorem ipsum dolor sit amet, consectetur adipiscing elit, sed do eiusmod tempor incididunt",
                     title = optionalTitle,
                     icon = null,
@@ -173,6 +175,7 @@ public fun Banners(modifier: Modifier = Modifier) {
                 )
 
                 InlineInformationBanner(
+                    modifier = Modifier.fillMaxWidth(),
                     title = optionalTitle,
                     icon = null,
                     iconActions = {
@@ -202,14 +205,18 @@ public fun Banners(modifier: Modifier = Modifier) {
                 }
 
                 InlineInformationBanner(
+                    modifier = Modifier.fillMaxWidth(),
                     title = optionalTitle,
                     icon = null,
                     iconActions = { iconAction(AllIconsKeys.General.Refresh, "Restart", onClick = { restart += 1 }) },
                     style = JewelTheme.inlineBannerStyle.information,
-                    content = { MarkdownText("Timer — **${"%.2f".format(timer)}** _seconds remaining_.") },
+                    content = {
+                        MarkdownText("Timer — **${"%.2f".format(Locale.ENGLISH, timer)}** _seconds remaining_.")
+                    },
                 )
 
                 InlineInformationBanner(
+                    modifier = Modifier.fillMaxWidth(),
                     icon = null,
                     style = JewelTheme.inlineBannerStyle.information,
                     text = "Lorem ipsum dolor sit amet, consectetur adipiscing elit, sed do eiusmod tempor incididunt",
@@ -236,6 +243,7 @@ public fun Banners(modifier: Modifier = Modifier) {
                 )
 
                 InlineInformationBanner(
+                    modifier = Modifier.fillMaxWidth(),
                     text = "Lorem ipsum dolor sit amet, consectetur adipiscing elit, sed do eiusmod tempor incididunt",
                     title = optionalTitle,
                     icon = null,
@@ -254,12 +262,14 @@ public fun Banners(modifier: Modifier = Modifier) {
                 )
 
                 InlineInformationBanner(
+                    modifier = Modifier.fillMaxWidth(),
                     text = "Lorem ipsum dolor sit amet, consectetur adipiscing elit, sed do eiusmod tempor incididunt",
                     title = optionalTitle,
                     linkActions = null,
                     style = JewelTheme.inlineBannerStyle.information,
                 )
                 InlineErrorBanner(
+                    modifier = Modifier.fillMaxWidth(),
                     style = JewelTheme.inlineBannerStyle.error,
                     text = "Lorem ipsum dolor sit amet, consectetur adipiscing elit, sed do eiusmod tempor incididunt",
                     title = optionalTitle,
@@ -272,6 +282,7 @@ public fun Banners(modifier: Modifier = Modifier) {
                     },
                 )
                 InlineInformationBanner(
+                    modifier = Modifier.fillMaxWidth(),
                     style = JewelTheme.inlineBannerStyle.information,
                     text = "Lorem ipsum dolor sit amet, consectetur adipiscing elit, sed do eiusmod tempor incididunt",
                     title = optionalTitle,
@@ -281,6 +292,7 @@ public fun Banners(modifier: Modifier = Modifier) {
                     },
                 )
                 InlineSuccessBanner(
+                    modifier = Modifier.fillMaxWidth(),
                     style = JewelTheme.inlineBannerStyle.success,
                     text = LONG_IPSUM,
                     title = optionalTitle,
@@ -312,6 +324,7 @@ public fun Banners(modifier: Modifier = Modifier) {
                     },
                 )
                 InlineWarningBanner(
+                    modifier = Modifier.fillMaxWidth(),
                     style = JewelTheme.inlineBannerStyle.warning,
                     text = "Lorem ipsum dolor sit amet, consectetur adipiscing elit, sed do eiusmod tempor incididunt",
                     title = optionalTitle,

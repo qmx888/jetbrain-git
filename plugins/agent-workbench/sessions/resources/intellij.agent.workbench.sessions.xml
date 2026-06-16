@@ -1,50 +1,74 @@
 <idea-plugin>
   <resource-bundle>messages.AgentSessionsBundle</resource-bundle>
 
+  <!-- region Generated dependencies - run `Generate Product Layouts` to regenerate -->
   <dependencies>
-    <!-- region Generated dependencies - run `Generate Product Layouts` to regenerate -->
     <module name="intellij.agent.workbench.chat"/>
-    <module name="intellij.platform.compose"/>
-    <!-- endregion -->
+    <module name="intellij.agent.workbench.common"/>
+    <module name="intellij.agent.workbench.prompt.core"/>
+    <module name="intellij.agent.workbench.sessions.core"/>
   </dependencies>
-
-  <extensionPoints>
-    <extensionPoint
-      qualifiedName="com.intellij.agent.workbench.sessionProviderBridge"
-      interface="com.intellij.agent.workbench.sessions.providers.AgentSessionProviderBridge"
-      dynamic="true"/>
-  </extensionPoints>
+  <!-- endregion -->
 
   <extensions defaultExtensionNs="com.intellij">
-    <toolWindow
-      id="agent.workbench.sessions"
-      anchor="right"
-      icon="AllIcons.Toolwindows.ToolWindowMessages"
-      canCloseContents="false"
-      factoryClass="com.intellij.agent.workbench.sessions.AgentSessionsToolWindowFactory"/>
+    <agent.workbench.promptLauncher implementation="com.intellij.agent.workbench.sessions.service.AgentSessionPromptLauncherBridge"/>
+    <postStartupActivity implementation="com.intellij.agent.workbench.sessions.service.OpenRouterPriceCatalogStartupActivity"/>
+    <postStartupActivity implementation="com.intellij.agent.workbench.sessions.sleep.AgentSessionSleepPreventionStartupActivity"/>
+    <notificationGroup id="Agent Workbench Sessions" displayType="BALLOON" bundle="messages.AgentSessionsBundle"
+                       key="notification.group.agent.workbench.sessions"/>
+    <applicationConfigurable
+      instance="com.intellij.agent.workbench.sessions.settings.AgentWorkbenchSettingsConfigurable"
+      id="com.intellij.agent.workbench.settings"
+      key="settings.agent.workbench.name"
+      bundle="messages.AgentSessionsBundle"
+      dynamic="true"
+      parentId="tools"/>
+    <applicationConfigurable
+      instance="com.intellij.agent.workbench.sessions.settings.AgentWorkbenchProvidersSettingsConfigurable"
+      id="com.intellij.agent.workbench.settings.providers"
+      key="settings.agent.workbench.providers.name"
+      bundle="messages.AgentSessionsBundle"
+      dynamic="true"
+      parentId="com.intellij.agent.workbench.settings"/>
     <advancedSetting
       id="agent.workbench.chat.open.in.dedicated.frame"
       default="true"
       bundle="messages.AgentSessionsBundle"
+      groupKey="advanced.settings.agent.workbench"
+      visible="false"/>
+    <advancedSetting
+      id="agent.workbench.prevent.system.sleep.while.working"
+      default="true"
+      bundle="messages.AgentSessionsBundle"
       groupKey="advanced.settings.agent.workbench"/>
-    <projectFrameCapabilitiesProvider implementation="com.intellij.agent.workbench.sessions.AgentWorkbenchProjectFrameCapabilitiesProvider"/>
-    <toolWindowLayoutProfileProvider implementation="com.intellij.agent.workbench.sessions.AgentWorkbenchToolWindowLayoutProfileProvider"/>
-    <statusBarWidgetFactory
-      id="claude.quota"
-      implementation="com.intellij.agent.workbench.sessions.claude.ClaudeQuotaStatusBarWidgetFactory"/>
+    <advancedSetting
+      id="agent.workbench.sessions.thread.cost.enabled"
+      default="false"
+      bundle="messages.AgentSessionsBundle"
+      groupKey="advanced.settings.agent.workbench"
+      visible="false"/>
+    <projectFrameCapabilitiesProvider implementation="com.intellij.agent.workbench.sessions.frame.AgentWorkbenchProjectFrameCapabilitiesProvider"/>
+    <projectFrameToolWindowLayout id="agent.workbench.dedicated" frameType="AGENT_DEDICATED" applyMode="forceOnce" migrationVersion="3">
+      <toolWindow id="Project" register="false"/>
+      <toolWindow id="Structure" register="false"/>
+      <toolWindow id="agent.workbench.sessions" anchor="left" visible="true" showStripeButton="true" weight="0.25"/>
+      <toolWindow id="Terminal" anchor="bottom" visible="false" showStripeButton="true"/>
+    </projectFrameToolWindowLayout>
+    <projectFrameActionExclusion frameType="AGENT_DEDICATED" place="MainToolbar" id="MainToolbarVCSGroup"/>
+    <projectFrameActionExclusion frameType="AGENT_DEDICATED" place="MainToolbar" id="ExecutionTargetsToolbarGroup"/>
+    <projectFrameActionExclusion frameType="AGENT_DEDICATED" place="MainToolbar" id="NewUiRunWidget"/>
+    <projectFrameActionExclusion frameType="AGENT_DEDICATED" place="MainToolbar" id="AIAssistantHubPopupAction"/>
+    <projectFrameActionExclusion frameType="AGENT_DEDICATED" place="MainToolbar" id="BuildSolutionBar"/>
+    <projectFrameActionExclusion frameType="AGENT_DEDICATED" place="MainToolbar" id="ActiveDeviceGroup"/>
+    <applicationSettings service="com.intellij.agent.workbench.sessions.state.AgentSessionTreeUiStateService"/>
+    <applicationSettings service="com.intellij.agent.workbench.sessions.state.AgentSessionLaunchProfileStateService"/>
+    <applicationSettings service="com.intellij.agent.workbench.sessions.state.AgentSessionUiPreferencesStateService"/>
+    <applicationSettings service="com.intellij.agent.workbench.sessions.settings.AgentSessionProviderSettingsService"/>
+    <applicationSettings service="com.intellij.agent.workbench.sessions.state.AgentSessionWarmStateService"/>
+    <applicationSettings service="com.intellij.agent.workbench.sessions.AgentSessionCostHintStateService"/>
   </extensions>
 
-  <actions resource-bundle="messages.AgentSessionsBundle">
-    <group id="AgentWorkbenchSessions.ToolWindow.GearActions">
-      <reference ref="OpenFile"/>
-      <separator/>
-      <action id="AgentWorkbenchSessions.ToggleDedicatedFrame" class="com.intellij.agent.workbench.sessions.AgentSessionsDedicatedFrameToggleAction"/>
-      <action id="AgentWorkbenchSessions.ToggleClaudeQuotaWidget" class="com.intellij.agent.workbench.sessions.AgentSessionsToggleClaudeQuotaWidgetAction"/>
-      <action id="AgentWorkbenchSessions.Refresh" class="com.intellij.agent.workbench.sessions.AgentSessionsRefreshAction"/>
-    </group>
-    <action
-      id="AgentWorkbenchSessions.ActivateWithProjectShortcut"
-      class="com.intellij.agent.workbench.sessions.AgentSessionsActivateWithProjectShortcutAction"
-      use-shortcut-of="ActivateProjectToolWindow"/>
-  </actions>
+  <extensions defaultExtensionNs="com.intellij.agent.workbench">
+    <settingsContributor implementation="com.intellij.agent.workbench.sessions.settings.AgentSessionCostSettingsContributor"/>
+  </extensions>
 </idea-plugin>

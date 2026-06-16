@@ -24,6 +24,8 @@ import com.intellij.ide.starters.shared.StarterLanguage
 import com.intellij.ide.starters.shared.StarterProjectType
 import com.intellij.ide.starters.shared.hyperLink
 import com.intellij.internal.statistic.eventLog.fus.MachineIdManager
+import com.intellij.internal.statistic.eventLog.validator.storage.persistence.EventLogMetadataSettingsPersistence
+import com.intellij.internal.statistic.utils.StatisticsUploadAssistant
 import com.intellij.openapi.application.ApplicationInfo
 import com.intellij.openapi.application.ApplicationNamesInfo
 import com.intellij.openapi.diagnostic.thisLogger
@@ -47,6 +49,7 @@ import com.intellij.util.io.HttpRequests
 import com.intellij.util.io.ZipUtil
 import org.jetbrains.idea.devkit.DevKitBundle
 import org.jetbrains.idea.devkit.DevKitBundle.message
+import org.jetbrains.idea.devkit.DevKitBundle.messageOrNull
 import org.jetbrains.idea.devkit.module.DEVKIT_NEWLY_GENERATED_PROJECT
 import org.jetbrains.idea.devkit.module.PluginModuleType
 import org.jetbrains.idea.devkit.projectRoots.IdeaJdk
@@ -58,13 +61,17 @@ import javax.swing.Icon
 internal open class IdePluginModuleWebBasedBuilder : WebStarterModuleBuilder() {
 
   private val PLUGIN_TYPE_KEY: Key<PluginType> = Key.create("ide.plugin.type")
-  private val PLUGIN_TYPE_PACK_GROUP_ID = "org.jetbrains.intellij.platform"
+  private val GROUP_ID_PREFIX = "org.jetbrains.intellij.platform"
+  private val PLUGIN_TYPE_PACK_GROUP_ID = GROUP_ID_PREFIX
   private val PACK_GROUPS_ORDER = listOf(
-    "org.jetbrains.intellij.platform.dependencies",
-    "org.jetbrains.intellij.platform.plugins",
-    "org.jetbrains.intellij.platform.misc",
-    "org.jetbrains.intellij.platform.samples",
+    "$GROUP_ID_PREFIX.architecture",
+    "$GROUP_ID_PREFIX.dependencies",
+    "$GROUP_ID_PREFIX.plugins",
+    "$GROUP_ID_PREFIX.misc",
+    "$GROUP_ID_PREFIX.samples",
   )
+  private val CATEGORY_MESSAGE_PREFIX = "module.builder.web.category."
+  private val CATEGORY_MESSAGE_SUFFIX = ".label"
 
   override fun getBuilderId(): String = "ide-plugin-web-starter"
   override fun getWeight(): Int = JVM_WEIGHT + 1000
@@ -105,8 +112,27 @@ internal open class IdePluginModuleWebBasedBuilder : WebStarterModuleBuilder() {
 
   private fun parseAndGetOrCreateCategory(info: ObjectNode, categories: MutableMap<String, PackCategory>): PackCategory? {
     val groupId = info["group"]?.get("id")?.asText().takeIf { it != PLUGIN_TYPE_PACK_GROUP_ID } ?: return null
-    val groupTitle = message("module.builder.web.category.$groupId.label") ?: groupId
+    val groupTitle = messageOrNull("$CATEGORY_MESSAGE_PREFIX$groupId$CATEGORY_MESSAGE_SUFFIX")
+      ?: buildTitleFromGroupId(groupId)
     return categories.getOrPut(groupId) { PackCategory(groupTitle, groupId) }
+  }
+
+  /**
+   * For new categories not having a message in the message bundle,
+   * we want to display something better than the missing message key.
+   *
+   * For example, instead of
+   * `!module.builder.web.category.org.jetbrains.intellij.platform.new.group.label!`
+   * display
+   * `New group`.
+   */
+  private fun buildTitleFromGroupId(groupId: String): String {
+    return groupId
+      .removePrefix(CATEGORY_MESSAGE_PREFIX)
+      .removeSuffix(CATEGORY_MESSAGE_SUFFIX)
+      .removePrefix("$GROUP_ID_PREFIX.")
+      .replace(".", " ")
+      .replaceFirstChar { it.uppercase() }
   }
 
   private fun createDependency(info: ObjectNode): WebStarterDependency {
@@ -121,7 +147,12 @@ internal open class IdePluginModuleWebBasedBuilder : WebStarterModuleBuilder() {
         addLinkIfPresent(linksObj, "specification", LibraryLinkType.SPECIFICATION)
       }
     } ?: emptyList()
-    val icon = info["icon"]?.asText()?.let { IconLoader.findIcon(it, this.javaClass.classLoader) }
+    val icon = info["icon"]?.asText()?.let {
+      // now KASTLE prepends icon paths with the pack ID, for example:
+      // org.jetbrains.intellij.platform.dependencies/compose/AllIcons.FileTypes
+      val normalizedIconPath = it.substringAfterLast("/")
+      IconLoader.findIcon(normalizedIconPath, this.javaClass.classLoader)
+    }
     val dependency = WebStarterDependency(
       id = id,
       title = name,
@@ -160,18 +191,19 @@ internal open class IdePluginModuleWebBasedBuilder : WebStarterModuleBuilder() {
     val url = composeGeneratorUrl(starterContext.serverUrl, starterContext)
     thisLogger().info("Loading project from ${url}")
 
-    val userAgent = getUserAgent()
     return HttpRequests
       .post(url.toExternalForm(), HttpRequests.JSON_CONTENT_TYPE)
       .tuner {
-        it.setRequestProperty("Client-Name", userAgent)
-        it.setRequestProperty("X-Product-Name", ApplicationNamesInfo.getInstance().fullProductName)
-        it.setRequestProperty("X-Product-Version", ApplicationInfo.getInstance().fullVersion)
         MachineIdManager.getAnonymizedMachineId("ij-plugin-generator")?.let { userId ->
-          it.setRequestProperty("X-User-ID", userId)
+          if (StatisticsUploadAssistant.isCollectAllowed()) {
+            MachineIdManager.getAnonymizedMachineId("ij-plugin-generator")?.let { userId ->
+              it.setRequestProperty("X-Machine-ID", userId)
+              it.setRequestProperty("X-JetBrains-Internal-User", EventLogMetadataSettingsPersistence.getInstance().isInternal.toString())
+            }
+          }
         }
       }
-      .userAgent(userAgent)
+      .userAgent(fullProductNameAndBuildVersion())
       .connectTimeout(10000)
       .isReadResponseOnError(true)
       .connect { request ->
@@ -194,6 +226,9 @@ internal open class IdePluginModuleWebBasedBuilder : WebStarterModuleBuilder() {
       }
     }
   }
+
+  private fun fullProductNameAndBuildVersion() =
+    "${ApplicationNamesInfo.getInstance().fullProductName}/${ApplicationInfo.getInstance().build.asStringWithoutProductCode()}"
 
   override fun composeGeneratorUrl(serverUrl: String, starterContext: WebStarterContext): Url {
     return Urls.newFromEncoded(starterContext.serverUrl + "/api/generate/download")

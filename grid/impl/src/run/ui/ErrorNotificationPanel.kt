@@ -17,8 +17,10 @@ import com.intellij.openapi.ui.MessageType
 import com.intellij.openapi.util.NlsActions
 import com.intellij.openapi.util.NlsContexts
 import com.intellij.openapi.util.text.StringUtil
+import com.intellij.ui.components.ActionLink
 import com.intellij.util.ui.JBDimension
 import com.intellij.util.ui.JBUI
+import org.jetbrains.annotations.ApiStatus
 import org.jetbrains.annotations.Nls
 import java.awt.BorderLayout
 import java.awt.Cursor
@@ -31,7 +33,6 @@ import java.awt.event.MouseListener
 import java.awt.font.TextAttribute
 import javax.swing.Box
 import javax.swing.Icon
-import javax.swing.JButton
 import javax.swing.JComponent
 import javax.swing.JLabel
 import javax.swing.JPanel
@@ -70,6 +71,7 @@ class ErrorNotificationPanel private constructor(
     initComponent(items, horizontalLayout)
   }
 
+  @ApiStatus.ScheduledForRemoval
   @Deprecated("This method is deprecated and will be deleted soon." +
               " To provide custom fixes to notification panel, implement the" +
               " [com.intellij.database.connection.throwable.info.RuntimeErrorActionProvider]" +
@@ -109,7 +111,7 @@ class ErrorNotificationPanel private constructor(
     font = UIManager.getFont("ToolTip.font")
     lineWrap = true
     border = if (horizontalLayout) {
-      JBUI.Borders.empty(0, VERTICAL_MARGINS, 0, 0)
+      JBUI.Borders.emptyLeft(VERTICAL_MARGINS)
     } else {
       JBUI.Borders.empty(HEIGHT_BETWEEN_TEXT_AND_BUTTONS, HORIZONTAL_MARGINS, 0, HORIZONTAL_MARGINS)
     }
@@ -248,26 +250,12 @@ class ErrorNotificationPanel private constructor(
     private val mnemonicCode: Int? = null,
   ) : PanelItem {
     override fun buildComponent(): JComponent {
-      return JButton().apply {
-        foreground = JBUI.CurrentTheme.Link.Foreground.ENABLED
-        text = linkText
+      return ActionLink(linkText) { onClickAction() }.apply {
         font = UIManager.getFont("ToolTip.font")
-
-        isOpaque = false
-        isContentAreaFilled = false
-        isBorderPainted = false
-        val fontMetrics = getFontMetrics(font)
-        preferredSize = JBDimension(fontMetrics.stringWidth(linkText), fontMetrics.height)
-        border = JBUI.Borders.empty()
-
-        isFocusable = true
         if (mnemonicCode != null) {
           mnemonic = mnemonicCode
-          addActionListener { onClickAction() }
           MnemonicHelper.registerMnemonicAction(this, mnemonicCode)
         }
-        addMouseListener(MouseClickedListener(onClickAction, this))
-        cursor = Cursor.getPredefinedCursor(Cursor.HAND_CURSOR)
       }
     }
   }
